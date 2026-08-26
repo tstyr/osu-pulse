@@ -1,0 +1,19 @@
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4-alpine
+    container_name: osu-pulse-lavalink
+    restart: unless-stopped
+    environment:
+      _JAVA_OPTIONS: -Xmx1G
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-change-me}
+    volumes:
+      - ./application.yml:/opt/Lavalink/application.yml:ro
+      - ./plugins:/opt/Lavalink/plugins
+    ports:
+      - "127.0.0.1:2333:2333"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--header=Authorization: ${LAVALINK_PASSWORD:-change-me}", "http://localhost:2333/version"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
