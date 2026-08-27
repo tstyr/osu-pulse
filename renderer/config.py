@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -57,6 +59,19 @@ def _executable_env(name: str, default: str) -> Path | None:
     return candidate.resolve()
 
 
+def _cloud_url() -> str | None:
+    raw = os.getenv("RENDER_CLOUD_URL", "").strip().rstrip("/")
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    local = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+    if (parsed.scheme != "https" and not local) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("RENDER_CLOUD_URL must be an HTTPS origin (or localhost for development)")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("RENDER_CLOUD_URL must not contain a path")
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     host: str
@@ -79,6 +94,14 @@ class Settings:
     keep_failed_temp: bool
     video_encoder: str
     danser_settings: str
+    cloud_url: str | None = None
+    cloud_bridge_token: str | None = None
+    blob_token: str | None = None
+    node_path: Path | None = None
+    cloud_poll_seconds: int = 5
+    renderer_id: str = "local-renderer"
+    blob_upload_script: Path = RENDERER_ROOT / "upload_blob.mjs"
+    project_root: Path = PROJECT_ROOT
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -94,7 +117,7 @@ class Settings:
             server_token=os.getenv("RENDER_SERVER_TOKEN") or None,
             osu_client_id=os.getenv("OSU_CLIENT_ID") or None,
             osu_client_secret=os.getenv("OSU_CLIENT_SECRET") or None,
-            danser_path=_executable_env("DANSER_PATH", "danser-cli"),
+            danser_path=_executable_env("DANSER_PATH", str(RENDERER_ROOT / "local" / "danser" / "danser-cli.exe")),
             ffmpeg_path=_executable_env("FFMPEG_PATH", "ffmpeg"),
             songs_path=_path_env("OSU_SONGS_PATH", songs_default),
             temp_path=_path_env("TEMP_PATH", RENDERER_ROOT / "temp"),
@@ -109,6 +132,14 @@ class Settings:
             keep_failed_temp=_bool_env("KEEP_FAILED_TEMP", False),
             video_encoder=encoder,
             danser_settings=os.getenv("DANSER_SETTINGS", "default").strip() or "default",
+            cloud_url=_cloud_url(),
+            cloud_bridge_token=os.getenv("RENDER_BRIDGE_TOKEN") or None,
+            blob_token=os.getenv("BLOB_READ_WRITE_TOKEN") or None,
+            node_path=_executable_env("RENDER_NODE_PATH", "node"),
+            cloud_poll_seconds=_int_env("RENDER_CLOUD_POLL_SECONDS", 5),
+            renderer_id=(os.getenv("RENDERER_ID") or socket.gethostname() or "local-renderer")[:64],
+            blob_upload_script=(RENDERER_ROOT / "upload_blob.mjs").resolve(),
+            project_root=PROJECT_ROOT,
         )
 
     def ensure_directories(self) -> None:

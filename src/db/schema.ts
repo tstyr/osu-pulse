@@ -35,6 +35,25 @@ export const focusStatusEnum = pgEnum("focus_status", [
   "cancelled",
 ]);
 
+export const cloudRenderStatusEnum = pgEnum("cloud_render_status", [
+  "queued",
+  "claimed",
+  "resolving_score",
+  "downloading_replay",
+  "resolving_beatmap",
+  "rendering",
+  "encoding",
+  "uploading",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export const cloudRenderInputEnum = pgEnum("cloud_render_input", [
+  "score_url",
+  "replay",
+]);
+
 export const accounts = pgTable(
   "accounts",
   {
@@ -205,9 +224,84 @@ export const focusSessions = pgTable(
   ],
 );
 
+export type CloudRenderOptions = {
+  resolution: "1920x1080" | "2560x1440" | "2560x1600" | "3840x2160";
+  fps: 60 | 120 | 240;
+  speed: "original" | "0.5" | "0.75" | "1.0" | "1.25" | "1.5" | "2.0";
+  motionBlur: boolean;
+};
+
+export type CloudRenderMetadata = {
+  score_id?: number | null;
+  player_name?: string | null;
+  user_id?: number | null;
+  beatmap_id?: number | null;
+  beatmapset_id?: number | null;
+  artist?: string | null;
+  title?: string | null;
+  difficulty?: string | null;
+  mapper?: string | null;
+  ruleset?: string;
+  mods?: string[];
+  score?: number | null;
+  accuracy?: number | null;
+  max_combo?: number | null;
+  miss_count?: number | null;
+  ended_at?: string | null;
+};
+
+export const cloudRenderJobs = pgTable(
+  "cloud_render_jobs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accessTokenHash: text("access_token_hash").notNull(),
+    inputType: cloudRenderInputEnum("input_type").notNull(),
+    sourceHash: text("source_hash").notNull(),
+    scoreUrl: text("score_url"),
+    replayData: text("replay_data"),
+    options: jsonb("options").$type<CloudRenderOptions>().notNull(),
+    status: cloudRenderStatusEnum("status").notNull().default("queued"),
+    progress: integer("progress").notNull().default(0),
+    message: text("message").notNull().default("ローカル Renderer の待機中"),
+    metadata: jsonb("metadata").$type<CloudRenderMetadata>(),
+    localJobId: text("local_job_id"),
+    claimedBy: text("claimed_by"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    cancelRequested: boolean("cancel_requested").notNull().default(false),
+    videoUrl: text("video_url"),
+    videoSize: bigint("video_size", { mode: "number" }),
+    errorCode: text("error_code"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("cloud_render_jobs_status_created_idx").on(table.status, table.createdAt),
+    index("cloud_render_jobs_lease_idx").on(table.leaseExpiresAt),
+    index("cloud_render_jobs_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const cloudRendererState = pgTable("cloud_renderer_state", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull().default("offline"),
+  busy: boolean("busy").notNull().default(false),
+  queueSize: integer("queue_size").notNull().default(0),
+  activeCloudJobId: uuid("active_cloud_job_id"),
+  dependencies: jsonb("dependencies").$type<Record<string, unknown>>().notNull().default({}),
+  version: text("version"),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Account = typeof accounts.$inferSelect;
 export type GuildSettings = typeof guildSettings.$inferSelect;
 export type ScoreEvent = typeof scoreEvents.$inferSelect;
 export type DailySnapshot = typeof dailySnapshots.$inferSelect;
 export type Reminder = typeof reminders.$inferSelect;
 export type FocusSession = typeof focusSessions.$inferSelect;
+export type CloudRenderJob = typeof cloudRenderJobs.$inferSelect;
+export type CloudRendererState = typeof cloudRendererState.$inferSelect;

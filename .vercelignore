@@ -1,0 +1,15 @@
+# Local renderer runtime and secrets must never be included in deployments.
+renderer/.env
+renderer/.venv/
+renderer/local/
+renderer/temp/
+renderer/output/
+renderer/logs/
+renderer/beatmap-index.json
+
+# Codex/local build artifacts.
+work/
+outputs/
+.git/
+.next/
+coverage/

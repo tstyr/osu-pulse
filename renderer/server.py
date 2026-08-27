@@ -18,6 +18,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from .beatmap_index import BeatmapIndex
 from .beatmap_resolver import BeatmapResolver
 from .config import Settings, settings as default_settings
+from .cloud_bridge import CloudRenderBridge
 from .danser_runner import DanserRunner
 from .errors import ErrorCode, RenderError
 from .jobs import JobManager
@@ -40,6 +41,7 @@ def configure_logging(settings: Settings) -> TimedRotatingFileHandler | None:
     handler._osu_renderer = True  # type: ignore[attr-defined]
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     return handler
 
 
@@ -60,15 +62,19 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         osu_api = OsuApiClient(settings.osu_client_id, settings.osu_client_secret)
         manager = JobManager(settings, osu_api, BeatmapResolver(beatmap_index), DanserRunner(settings, dependencies))
         await manager.start()
+        cloud_bridge = CloudRenderBridge(settings, manager, dependencies)
+        await cloud_bridge.start()
         app.state.settings = settings
         app.state.dependencies = dependencies
         app.state.beatmap_index = beatmap_index
         app.state.osu_api = osu_api
         app.state.jobs = manager
+        app.state.cloud_bridge = cloud_bridge
         print_startup_summary(settings, dependencies)
         try:
             yield
         finally:
+            await cloud_bridge.stop()
             await manager.stop()
             await osu_api.close()
             if file_handler:
@@ -237,6 +243,10 @@ def print_startup_summary(settings: Settings, dependencies: DependencyState) -> 
     print(f"osu! API     : {'OK' if dependencies.osu_api else 'MISSING CREDENTIALS'}")
     print(f"GPU Encoder  : {'NVENC' if dependencies.nvenc else 'CPU (libx264)'}")
     print(f"Render Slots : {settings.max_concurrent_renders}\n")
+    cloud_ready = bool(settings.cloud_url and settings.cloud_bridge_token and settings.blob_token)
+    print(f"Vercel Bridge: {'READY' if cloud_ready else 'NOT CONFIGURED'}")
+    if settings.cloud_url:
+        print(f"Cloud URL    : {settings.cloud_url}")
     print(f"Songs Index  : {dependencies.songs_index_count:,} beatmaps")
     if dependencies.songs_index_error:
         print(f"Index Error  : {dependencies.songs_index_error}")

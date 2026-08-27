@@ -1,4 +1,4 @@
-import { Bot, Code2, Search } from "lucide-react";
+import { Bot, Code2, Film, Search } from "lucide-react";
 import Link from "next/link";
 
 import { Brand } from "./brand";
@@ -25,6 +25,13 @@ export function SiteHeader() {
           />
         </form>
         <nav className="ml-auto flex items-center gap-1.5">
+          <Link
+            href="/render"
+            aria-label="Replay Renderer"
+            className="flex size-9 items-center justify-center gap-1.5 rounded-lg text-xs font-medium text-zinc-400 transition hover:bg-white/[0.05] hover:text-white sm:w-auto sm:px-3"
+          >
+            <Film className="size-3.5" /> <span className="hidden sm:inline">Render</span>
+          </Link>
           <Link
             href="/docs"
             className="hidden rounded-lg px-3 py-2 text-xs font-medium text-zinc-400 transition hover:bg-white/[0.05] hover:text-white sm:block"

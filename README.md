@@ -26,6 +26,7 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/stats` でBot利用統計
 - `/render` でosu!standardのResult URLまたは`.osr`をローカルdanserでMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
+- Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成MP4をVercel Blobで受け取る
 
 ## ローカル起動
 
@@ -52,13 +53,14 @@ docker compose -f lavalink/compose.yml up -d
 
 ## ローカルReplay Renderer（Windows）
 
-RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします。Botから自動起動せず、停止中でも既存コマンドには影響しません。利用するPCではBotも同じWindows PC上で起動してください。
+RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします。クラウドブリッジもPCからVercelへの外向き通信だけを使い、ポート開放やトンネルは不要です。Botが停止中でも、Rendererさえ起動していればWebの`/render`から利用できます。Discordの`/render`を使う場合だけBotも同じWindows PCで起動します。
 
-1. [danser-goの公式Releases](https://github.com/Wieku/danser-go/releases)からWindows版を展開します。
+1. `powershell -ExecutionPolicy Bypass -File renderer/install_danser.ps1` を実行します。公式`Wieku/danser-go`の最新安定Windows版を`renderer/local/danser`へ配置します。
 2. `renderer/.env.example` を `renderer/.env` にコピーします。
-3. `DANSER_PATH`、`FFMPEG_PATH`、`OSU_SONGS_PATH`、`OSU_CLIENT_ID`、`OSU_CLIENT_SECRET`を設定します。
+3. `FFMPEG_PATH`、`OSU_SONGS_PATH`、`OSU_CLIENT_ID`、`OSU_CLIENT_SECRET`を設定します。既定の`DANSER_PATH`は同梱インストーラーの配置先を使います。
 4. Bot側の`.env.local`とRenderer側の`renderer/.env`へ同じ`RENDER_SERVER_TOKEN`を設定します（空でもloopback限定で動作します）。
-5. `renderer/start_renderer.bat`をダブルクリックします。初回だけPython仮想環境と小さなAPI依存を自動セットアップします。
+5. Web連携ではVercel Blobを接続し、`RENDER_CLOUD_URL`、`RENDER_BRIDGE_TOKEN`、`BLOB_READ_WRITE_TOKEN`をRenderer側に設定します。このリポジトリをVercel CLIでリンク済みなら`renderer/.venv/Scripts/python.exe -m renderer.configure_cloud_bridge`で安全に同期できます。
+6. `renderer/start_renderer.bat`をダブルクリックします。初回だけPython仮想環境と小さなAPI依存を自動セットアップします。
 
 既定値は2560x1600・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVENCを検査し、SongsのBeatmap ID/MD5インデックスを作成します。danserは内部でFFmpegを利用し、NVENCの実エンコード確認に失敗した場合はlibx264へフォールバックします。
 
@@ -79,6 +81,8 @@ npm run bot:start
 
 Rendererを止めるときは起動したBATウィンドウを閉じます。再起動後はBotを再起動せずに利用できます。出力は`renderer/output`に保存され、既定で24時間後に削除されます。Jobの一時ファイルは成功・失敗・キャンセル後に削除されます（`KEEP_FAILED_TEMP=true`を除く）。
 
+Webでは`https://osu-pulse.vercel.app/render`を開き、`outputs/render-access-key.txt`のキーを入力します。キーはブラウザの`sessionStorage`だけに保存されます。`.osr`はVercel Functionsのペイロード制限を考慮して3 MBまで、完成MP4は東京リージョンの公開Vercel Blobへ直接アップロードされます。保存期限は24時間で、日次Cronの次回実行時に削除されるため実際の保持は最大約48時間です。
+
 ## 必須環境変数
 
 `.env.example` を参照してください。最低限、以下が必要です。
@@ -90,6 +94,7 @@ Rendererを止めるときは起動したBATウィンドウを閉じます。再
 - `WEB_APP_URL`
 - 音楽利用時は `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD`
 - ローカルRenderer利用時は `RENDER_SERVER_URL`, `RENDER_SERVER_TOKEN`
+- Web Renderer利用時は `WEB_RENDER_ACCESS_KEY`, `RENDER_BRIDGE_TOKEN`, `BLOB_READ_WRITE_TOKEN`, `RENDER_CLOUD_URL`
 
 秘密値はGitへコミットせず、Vercel環境変数とworker側のSecret Storeへ登録してください。
 
@@ -111,4 +116,4 @@ Webはリンク済みVercelプロジェクトへデプロイします。
 vercel deploy --prod
 ```
 
-Vercel Functions内ではGateway workerやRendererを起動しません。ローカルReplay Rendererを使う構成ではGateway workerをRendererと同じWindows PCで起動します。
+Vercel Functions内ではGateway workerやdanserを起動しません。WebのレンダージョブはNeonへ保存され、起動中のローカルRendererがポーリングして処理します。Gateway worker（Discord Bot）とRendererは独立して起動・停止できます。

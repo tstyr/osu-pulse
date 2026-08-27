@@ -8,6 +8,13 @@
       "when": 1787768506695,
       "tag": "0000_plain_warpath",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787797961683,
+      "tag": "0001_sturdy_diamondback",
+      "breakpoints": true
     }
   ]
 }

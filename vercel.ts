@@ -7,5 +7,9 @@ export const config: VercelConfig = {
       path: "/api/cron/daily-digest",
       schedule: "0 12 * * *",
     },
+    {
+      path: "/api/cron/render-cleanup",
+      schedule: "15 15 * * *",
+    },
   ],
 };

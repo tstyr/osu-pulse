@@ -21,6 +21,13 @@ PROGRESS_PATTERN = re.compile(r"(?<![0-9])(100|[0-9]{1,2})(?:\.[0-9]+)?\s*%")
 NVENC_FAILURE_PATTERN = re.compile(r"nvenc|no capable devices|cannot load.*cuda|encoder.*not found", re.IGNORECASE)
 
 
+def progress_from_line(line: str) -> int | None:
+    if "Progress:" not in line:
+        return None
+    match = PROGRESS_PATTERN.search(line)
+    return int(match.group(1)) if match else None
+
+
 class DanserRunner:
     def __init__(self, settings: Settings, dependencies: DependencyState) -> None:
         self.settings = settings
@@ -165,9 +172,10 @@ class DanserRunner:
                 if len(lines) > 500:
                     del lines[:100]
                 log_file.write(decoded + "\n")
-                match = PROGRESS_PATTERN.search(decoded)
-                if match:
-                    percentage = int(match.group(1))
+                # FFmpeg also prints percentages (for example muxing overhead),
+                # so only danser's precise progress lines may drive job state.
+                percentage = progress_from_line(decoded)
+                if percentage is not None:
                     if percentage >= 90:
                         job.update(JobStatus.ENCODING, min(99, percentage), decoded)
                     else:
