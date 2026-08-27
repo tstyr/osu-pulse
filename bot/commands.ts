@@ -104,4 +104,35 @@ export const commands = [
     .addSubcommand((subcommand) => subcommand.setName("queue").setDescription("再生キューを表示"))
     .addSubcommand((subcommand) => subcommand.setName("volume").setDescription("音量を変更").addIntegerOption((option) => option.setName("percent").setDescription("0〜150").setRequired(true).setMinValue(0).setMaxValue(150)))
     .addSubcommand((subcommand) => subcommand.setName("stop").setDescription("停止して退出")),
+
+  new SlashCommandBuilder()
+    .setName("render")
+    .setDescription("osu!standard ReplayをローカルPCで動画化")
+    .addStringOption((option) => option.setName("url").setDescription("osu! Result URL"))
+    .addAttachmentOption((option) => option.setName("replay").setDescription(".osr Replayファイル"))
+    .addStringOption((option) => option.setName("resolution").setDescription("動画解像度（既定: 2560x1600）").addChoices(
+      { name: "1920x1080 (16:9)", value: "1920x1080" },
+      { name: "2560x1440 (16:9)", value: "2560x1440" },
+      { name: "2560x1600 (16:10 / default)", value: "2560x1600" },
+      { name: "3840x2160 (4K)", value: "3840x2160" },
+    ))
+    .addIntegerOption((option) => option.setName("fps").setDescription("動画FPS（既定: 60）").addChoices(
+      { name: "60 fps", value: 60 },
+      { name: "120 fps", value: 120 },
+      { name: "240 fps", value: 240 },
+    ))
+    .addStringOption((option) => option.setName("speed").setDescription("再生速度（既定: Original）").addChoices(
+      { name: "Original", value: "original" },
+      { name: "1.0x", value: "1.0" },
+      { name: "0.5x", value: "0.5" },
+      { name: "0.75x", value: "0.75" },
+      { name: "1.25x", value: "1.25" },
+      { name: "1.5x", value: "1.5" },
+      { name: "2.0x", value: "2.0" },
+    ))
+    .addBooleanOption((option) => option.setName("motion_blur").setDescription("Motion Blur（既定: OFF）")),
+
+  new SlashCommandBuilder()
+    .setName("render-status")
+    .setDescription("ローカルRendererの状態を確認"),
 ].map((command) => command.toJSON());

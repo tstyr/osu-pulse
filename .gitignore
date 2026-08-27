@@ -22,7 +22,17 @@
 # environment files and Vercel metadata
 .env*
 !.env.example
+!renderer/.env.example
 .vercel
+
+# local replay renderer state
+/renderer/.venv/
+/renderer/temp/
+/renderer/output/
+/renderer/logs/
+/renderer/beatmap-index.json
+__pycache__/
+*.py[cod]
 
 # misc
 .DS_Store
