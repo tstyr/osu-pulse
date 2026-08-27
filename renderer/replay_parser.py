@@ -74,9 +74,12 @@ def parse_replay(data: bytes) -> ReplayInfo:
         beatmap_md5 = _read_osu_string(stream, maximum=64)
         player_name = _read_osu_string(stream, maximum=256)
         replay_md5 = _read_osu_string(stream, maximum=64)
-        # Six hit counts are validated by reading, but are not needed by danser.
-        for _ in range(6):
-            _unpack(stream, "<h")
+        count_300 = _unpack(stream, "<h")
+        count_100 = _unpack(stream, "<h")
+        count_50 = _unpack(stream, "<h")
+        count_geki = _unpack(stream, "<h")
+        count_katu = _unpack(stream, "<h")
+        count_miss = _unpack(stream, "<h")
         score = _unpack(stream, "<i")
         max_combo = _unpack(stream, "<h")
         perfect = bool(_unpack(stream, "<?"))
@@ -102,6 +105,12 @@ def parse_replay(data: bytes) -> ReplayInfo:
         beatmap_md5=beatmap_md5.lower(),
         player_name=player_name,
         replay_md5=replay_md5,
+        count_300=count_300,
+        count_100=count_100,
+        count_50=count_50,
+        count_geki=count_geki,
+        count_katu=count_katu,
+        count_miss=count_miss,
         score=score,
         max_combo=max_combo,
         perfect=perfect,

@@ -14,6 +14,8 @@ class ReplayParserTests(unittest.TestCase):
         self.assertEqual(replay.beatmap_md5, "a" * 32)
         self.assertEqual(replay.player_name, "Test Player")
         self.assertEqual(mods_from_bits(replay.mods_raw), ["HD"])
+        self.assertEqual(replay.count_miss, 1)
+        self.assertAlmostEqual(replay.accuracy or 0, (300 * 300 + 100 * 20 + 50 * 3) / (300 * 324))
 
     def test_rejects_truncated_or_invalid_replay(self) -> None:
         for data in (b"not-a-replay", replay_bytes("not-an-md5"), replay_bytes("a" * 32)[:-1]):

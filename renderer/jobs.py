@@ -152,7 +152,9 @@ class JobManager:
                     ruleset="osu",
                     mods=mods_from_bits(info.mods_raw),
                     score=info.score,
+                    accuracy=info.accuracy,
                     max_combo=info.max_combo,
+                    miss_count=info.count_miss,
                 )
             else:
                 job.metadata.player_name = job.metadata.player_name or info.player_name
@@ -165,6 +167,12 @@ class JobManager:
             )
             job.beatmap_path = beatmap.path
             job.metadata.beatmap_id = job.metadata.beatmap_id or beatmap.beatmap_id
+            local_metadata = self.beatmaps.metadata(beatmap.path)
+            job.metadata.beatmapset_id = job.metadata.beatmapset_id or local_metadata.get("beatmapset_id")  # type: ignore[assignment]
+            job.metadata.artist = job.metadata.artist or local_metadata.get("artist")  # type: ignore[assignment]
+            job.metadata.title = job.metadata.title or local_metadata.get("title")  # type: ignore[assignment]
+            job.metadata.difficulty = job.metadata.difficulty or local_metadata.get("difficulty")  # type: ignore[assignment]
+            job.metadata.mapper = job.metadata.mapper or local_metadata.get("mapper")  # type: ignore[assignment]
             metadata_path = job_dir / "metadata.json"
             await asyncio.to_thread(
                 metadata_path.write_text,

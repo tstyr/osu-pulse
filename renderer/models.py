@@ -37,11 +37,24 @@ class ReplayInfo:
     beatmap_md5: str
     player_name: str
     replay_md5: str
+    count_300: int
+    count_100: int
+    count_50: int
+    count_geki: int
+    count_katu: int
+    count_miss: int
     score: int
     max_combo: int
     perfect: bool
     mods_raw: int
     timestamp_ticks: int
+
+    @property
+    def accuracy(self) -> float | None:
+        total = self.count_300 + self.count_100 + self.count_50 + self.count_miss
+        if total <= 0:
+            return None
+        return (300 * self.count_300 + 100 * self.count_100 + 50 * self.count_50) / (300 * total)
 
 
 @dataclass(slots=True)
