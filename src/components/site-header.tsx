@@ -32,7 +32,9 @@ export function SiteHeader() {
             セットアップ
           </Link>
           <a
-            href="https://github.com"
+            href="https://github.com/tstyr/osu-pulse"
+            target="_blank"
+            rel="noreferrer"
             aria-label="GitHub"
             className="grid size-9 place-items-center rounded-lg text-zinc-500 transition hover:bg-white/[0.05] hover:text-white"
           >

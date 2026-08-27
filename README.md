@@ -2,6 +2,9 @@
 
 osu!の成長記録、Discordへのリザルト通知、毎日のDM、リマインダー、ポモドーロ、Lavalink音楽再生を一つにまとめたDiscord Bot + Webダッシュボードです。
 
+- Web: https://osu-pulse.vercel.app
+- Repository: https://github.com/tstyr/osu-pulse
+
 ## 構成
 
 - **Web / API / Cron / Workflow:** Next.js 16 on Vercel
