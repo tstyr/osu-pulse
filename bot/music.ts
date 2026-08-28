@@ -35,7 +35,11 @@ export function createLavalinkManager(client: Client) {
 
   client.on("raw", (payload) => manager.sendRawData(payload));
   manager.nodeManager.on("connect", (node) => console.log(`[lavalink] connected: ${node.id}`));
-  manager.nodeManager.on("error", (node, error) => console.error(`[lavalink] ${node.id}:`, error));
+  manager.nodeManager.on("error", (node, error) => {
+    const cause = error instanceof AggregateError ? error.errors.find((item) => item instanceof Error) : error;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    console.error(`[lavalink] ${node.id}: ${message}`);
+  });
   return manager;
 }
 

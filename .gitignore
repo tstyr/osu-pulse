@@ -35,6 +35,11 @@
 __pycache__/
 *.py[cod]
 
+# local Lavalink runtime and downloaded plugins
+/lavalink/runtime/
+/lavalink/plugins/*
+!/lavalink/plugins/.gitkeep
+
 # misc
 .DS_Store
 *.pem
