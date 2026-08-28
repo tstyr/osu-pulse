@@ -48,6 +48,29 @@ if errorlevel 1 (
     )
 )
 
+set "MANIA_PYTHON=%~dp0.venv-mania\Scripts\python.exe"
+set "MANIA_SOURCE=%~dp0local\osu-mania-renderer\osu_mania_renderer_v2\__init__.py"
+if not exist "%MANIA_PYTHON%" goto :install_mania
+if not exist "%MANIA_SOURCE%" goto :install_mania
+"%MANIA_PYTHON%" -c "import moderngl,numpy,osrparse,PIL" >nul 2>nul
+if errorlevel 1 goto :install_mania
+goto :mania_ready
+
+:install_mania
+if /i "%~1"=="--check" (
+    echo [ERROR] osu!mania Renderer is not installed.
+    echo Run: powershell -ExecutionPolicy Bypass -File renderer\install_mania_renderer.ps1
+    goto :failed
+)
+echo [SETUP] Installing the osu!mania Renderer...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_mania_renderer.ps1"
+if errorlevel 1 (
+    echo [ERROR] osu!mania Renderer setup failed.
+    goto :failed
+)
+
+:mania_ready
+
 "%RENDERER_VENV%\Scripts\python.exe" -c "from renderer.config import settings; raise SystemExit(0 if settings.danser_path and settings.danser_path.is_file() else 1)" >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Renderer configuration is invalid or danser-cli.exe was not found.

@@ -38,12 +38,18 @@ class DanserRunner:
         self.dependencies = dependencies
 
     async def render(self, job: RenderJob, replay_path: Path) -> Path:
+        if job.metadata and job.metadata.ruleset == "mania":
+            return await self._render_mania(job, replay_path)
+
         if not executable_exists(self.settings.danser_path):
             raise RenderError(ErrorCode.DANSER_NOT_FOUND, "danser executable was not found", http_status=503)
         if not executable_exists(self.settings.ffmpeg_path):
             raise RenderError(ErrorCode.FFMPEG_NOT_FOUND, "FFmpeg executable was not found", http_status=503)
         if not self.settings.songs_path.is_dir():
             raise RenderError(ErrorCode.BEATMAP_NOT_FOUND, "osu! Songs directory was not found", http_status=503)
+        skin_path = self.settings.osu_skins_path / self.settings.standard_skin
+        if not (skin_path / "skin.ini").is_file():
+            raise RenderError(ErrorCode.SKIN_NOT_FOUND, f"Standard skin was not found: {self.settings.standard_skin}", http_status=503)
 
         encoder = self._encoder()
         return_code, output_lines = await self._run_once(job, replay_path, encoder)
@@ -61,6 +67,34 @@ class DanserRunner:
 
         detail = self._safe_failure_detail(output_lines)
         raise RenderError(ErrorCode.DANSER_CRASHED, detail or f"danser exited with code {return_code}")
+
+    async def _render_mania(self, job: RenderJob, replay_path: Path) -> Path:
+        if not executable_exists(self.settings.mania_python_path) or not self.settings.mania_entrypoint_path.is_file():
+            raise RenderError(ErrorCode.MANIA_RENDERER_NOT_FOUND, "osu!mania renderer was not found", http_status=503)
+        if not (self.settings.mania_source_path / "osu_mania_renderer_v2" / "__init__.py").is_file():
+            raise RenderError(ErrorCode.MANIA_RENDERER_NOT_FOUND, "osu!mania renderer source was not found", http_status=503)
+        if not executable_exists(self.settings.ffmpeg_path):
+            raise RenderError(ErrorCode.FFMPEG_NOT_FOUND, "FFmpeg executable was not found", http_status=503)
+        skin_path = self.settings.osu_skins_path / self.settings.mania_skin
+        if not (skin_path / "skin.ini").is_file():
+            raise RenderError(ErrorCode.SKIN_NOT_FOUND, f"Mania skin was not found: {self.settings.mania_skin}", http_status=503)
+        if job.options.speed_multiplier not in {None, 1.0} or job.options.motion_blur:
+            raise RenderError(ErrorCode.INVALID_OPTIONS, "Custom speed and motion blur are not available for osu!mania yet")
+
+        encoder = self._encoder()
+        return_code, output_lines = await self._run_mania_once(job, replay_path, encoder)
+        if return_code == 0:
+            return self._verify_output(job)
+        combined = "\n".join(output_lines[-100:])
+        if encoder in HARDWARE_ENCODERS and self.settings.video_encoder == "auto" and HARDWARE_ENCODER_FAILURE_PATTERN.search(combined):
+            LOGGER.warning("job=%s mania hardware encoder %s failed; retrying with libx264", job.id, encoder)
+            self._remove_partial_output(job.id)
+            job.update(JobStatus.RENDERING, 1, f"{encoder} unavailable; retrying with CPU encoder")
+            return_code, output_lines = await self._run_mania_once(job, replay_path, "libx264")
+            if return_code == 0:
+                return self._verify_output(job)
+        detail = self._safe_failure_detail(output_lines)
+        raise RenderError(ErrorCode.DANSER_CRASHED, detail or f"osu!mania renderer exited with code {return_code}")
 
     def _encoder(self) -> str:
         if self.settings.video_encoder == "auto":
@@ -80,8 +114,17 @@ class DanserRunner:
         settings_patch = {
             "General": {
                 "OsuSongsDir": str(self.settings.songs_path),
+                "OsuSkinsDir": str(self.settings.osu_skins_path),
                 "DiscordPresenceOn": False,
                 "UnpackOszFiles": False,
+            },
+            "Skin": {
+                "CurrentSkin": self.settings.standard_skin,
+                "FallbackSkin": "default",
+                "UseColorsFromSkin": True,
+                "Cursor": {
+                    "UseSkinCursor": True,
+                },
             },
             "Recording": {
                 "FrameWidth": width,
@@ -106,6 +149,7 @@ class DanserRunner:
             "-record",
             f"-out={job.id}",
             f"-settings={self.settings.danser_settings}",
+            f"-skin={self.settings.standard_skin}",
             "-noupdatecheck",
             "-preciseprogress",
             f"-sPatch={json.dumps(settings_patch, ensure_ascii=False, separators=(',', ':'))}",
@@ -116,25 +160,60 @@ class DanserRunner:
 
     async def _run_once(self, job: RenderJob, replay_path: Path, encoder: str) -> tuple[int, list[str]]:
         command = self._command(job, replay_path, encoder)
+        assert self.settings.danser_path
+        return await self._run_process(job, command, encoder, self.settings.danser_path.parent)
+
+    def _mania_command(self, job: RenderJob, replay_path: Path, encoder: str) -> list[str]:
+        assert self.settings.mania_python_path
+        assert job.beatmap_path
+        output = (self.settings.output_path / f"{job.id}.mp4").resolve()
+        return [
+            str(self.settings.mania_python_path),
+            str(self.settings.mania_entrypoint_path),
+            str(replay_path),
+            str(job.beatmap_path.parent),
+            "-o", str(output),
+            "--source-path", str(self.settings.mania_source_path),
+            "--skin-dir", str(self.settings.osu_skins_path / self.settings.mania_skin),
+            "--resolution", job.options.resolution,
+            "--fps", str(job.options.fps),
+            "--encoder", encoder,
+            "--timeout", str(self.settings.render_timeout_seconds),
+        ]
+
+    async def _run_mania_once(self, job: RenderJob, replay_path: Path, encoder: str) -> tuple[int, list[str]]:
+        command = self._mania_command(job, replay_path, encoder)
+        return await self._run_process(job, command, encoder, self.settings.project_root)
+
+    async def _run_process(
+        self,
+        job: RenderJob,
+        command: list[str],
+        encoder: str,
+        working_directory: Path,
+    ) -> tuple[int, list[str]]:
         env = os.environ.copy()
+        if job.metadata and job.metadata.ruleset == "mania":
+            env["PYTHONUTF8"] = "1"
         ffmpeg_parent = str(self.settings.ffmpeg_path.parent) if self.settings.ffmpeg_path else ""
         if ffmpeg_parent:
             env["PATH"] = ffmpeg_parent + os.pathsep + env.get("PATH", "")
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
         job.render_started_at = job.render_started_at or datetime.now(timezone.utc)
-        job.update(JobStatus.RENDERING, max(job.progress, 1), f"Starting danser with {encoder}")
+        engine = "osu!mania renderer" if job.metadata and job.metadata.ruleset == "mania" else "danser"
+        job.update(JobStatus.RENDERING, max(job.progress, 1), f"Starting {engine} with {encoder}")
 
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
-                cwd=str(self.settings.danser_path.parent),
+                cwd=str(working_directory),
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 creationflags=creationflags,
             )
         except FileNotFoundError as exc:
-            raise RenderError(ErrorCode.DANSER_NOT_FOUND, "danser executable was not found", http_status=503) from exc
+            raise RenderError(ErrorCode.MANIA_RENDERER_NOT_FOUND if job.metadata and job.metadata.ruleset == "mania" else ErrorCode.DANSER_NOT_FOUND, "Replay renderer executable was not found", http_status=503) from exc
         except OSError as exc:
             code = ErrorCode.DISK_FULL if exc.errno == errno.ENOSPC else ErrorCode.DANSER_CRASHED
             raise RenderError(code, "Could not start danser") from exc

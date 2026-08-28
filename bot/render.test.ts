@@ -13,6 +13,17 @@ describe("render account choices", () => {
     })).toBe("321.5pp ・ SS ・ Artist - Song [Insane]");
   });
 
+  it("labels mania choices while keeping pp and rank first", () => {
+    expect(renderAccountChoiceName({
+      pp: 250.04,
+      rank: "S",
+      ruleset: "mania",
+      artist: "Artist",
+      title: "Keys",
+      difficulty: "4K MX",
+    })).toBe("250.0pp ・ S ・ MANIA ・ Artist - Keys [4K MX]");
+  });
+
   it("fits Discord's autocomplete choice-name limit", () => {
     const name = renderAccountChoiceName({
       pp: null,

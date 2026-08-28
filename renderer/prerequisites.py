@@ -14,8 +14,11 @@ def executable_exists(path: Path | None) -> bool:
 @dataclass(slots=True)
 class DependencyState:
     danser: bool = False
+    mania_renderer: bool = False
     ffmpeg: bool = False
     osu_songs: bool = False
+    standard_skin: bool = False
+    mania_skin: bool = False
     osu_api: bool = False
     nvenc: bool = False
     amf: bool = False
@@ -25,14 +28,26 @@ class DependencyState:
 
     @property
     def status(self) -> str:
-        required = (self.danser, self.ffmpeg, self.osu_songs, self.osu_api, self.songs_index_ready)
+        required = (
+            self.danser,
+            self.mania_renderer,
+            self.ffmpeg,
+            self.osu_songs,
+            self.standard_skin,
+            self.mania_skin,
+            self.osu_api,
+            self.songs_index_ready,
+        )
         return "online" if all(required) else "degraded"
 
     def public_dict(self) -> dict[str, object]:
         return {
             "danser": self.danser,
+            "mania_renderer": self.mania_renderer,
             "ffmpeg": self.ffmpeg,
             "osu_songs": self.osu_songs,
+            "standard_skin": self.standard_skin,
+            "mania_skin": self.mania_skin,
             "osu_api": self.osu_api,
             "nvenc": self.nvenc,
             "amf": self.amf,
@@ -87,8 +102,15 @@ async def inspect_dependencies(settings: Settings) -> DependencyState:
         amf_ok = False
     return DependencyState(
         danser=executable_exists(settings.danser_path),
+        mania_renderer=bool(
+            executable_exists(settings.mania_python_path)
+            and settings.mania_entrypoint_path.is_file()
+            and (settings.mania_source_path / "osu_mania_renderer_v2" / "__init__.py").is_file()
+        ),
         ffmpeg=ffmpeg_ok,
         osu_songs=settings.songs_path.is_dir(),
+        standard_skin=(settings.osu_skins_path / settings.standard_skin / "skin.ini").is_file(),
+        mania_skin=(settings.osu_skins_path / settings.mania_skin / "skin.ini").is_file(),
         osu_api=bool(settings.osu_client_id and settings.osu_client_secret),
         nvenc=nvenc_ok,
         amf=amf_ok,

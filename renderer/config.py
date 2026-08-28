@@ -101,6 +101,12 @@ class Settings:
     keep_failed_temp: bool
     video_encoder: str
     danser_settings: str
+    osu_skins_path: Path = Path(os.getenv("LOCALAPPDATA", PROJECT_ROOT)) / "osu!" / "Skins"
+    standard_skin: str = "osu-pulse Appu"
+    mania_skin: str = "osu-pulse R Skin v3.0 Bars"
+    mania_python_path: Path | None = RENDERER_ROOT / ".venv-mania" / "Scripts" / "python.exe"
+    mania_source_path: Path = RENDERER_ROOT / "local" / "osu-mania-renderer"
+    mania_entrypoint_path: Path = RENDERER_ROOT / "mania_cli.py"
     cloud_url: str | None = None
     cloud_bridge_token: str | None = None
     blob_token: str | None = None
@@ -149,6 +155,12 @@ class Settings:
             keep_failed_temp=_bool_env("KEEP_FAILED_TEMP", False),
             video_encoder=encoder,
             danser_settings=os.getenv("DANSER_SETTINGS", "default").strip() or "default",
+            osu_skins_path=_path_env("OSU_SKINS_PATH", Path(os.getenv("LOCALAPPDATA", PROJECT_ROOT)) / "osu!" / "Skins"),
+            standard_skin=os.getenv("OSU_STANDARD_SKIN", "osu-pulse Appu").strip() or "osu-pulse Appu",
+            mania_skin=os.getenv("OSU_MANIA_SKIN", "osu-pulse R Skin v3.0 Bars").strip() or "osu-pulse R Skin v3.0 Bars",
+            mania_python_path=_executable_env("MANIA_PYTHON_PATH", str(RENDERER_ROOT / ".venv-mania" / "Scripts" / "python.exe")),
+            mania_source_path=_path_env("MANIA_RENDERER_SOURCE", RENDERER_ROOT / "local" / "osu-mania-renderer"),
+            mania_entrypoint_path=(RENDERER_ROOT / "mania_cli.py").resolve(),
             cloud_url=_cloud_url(),
             cloud_bridge_token=os.getenv("RENDER_BRIDGE_TOKEN") or None,
             blob_token=os.getenv("BLOB_READ_WRITE_TOKEN") or None,

@@ -24,6 +24,8 @@ import {
   TERMINAL_CLOUD_RENDER_STATUSES,
   type CloudRenderStatus,
 } from "./constants";
+export { parseScoreUrl, RenderApiError } from "./score-url";
+import { RenderApiError } from "./score-url";
 
 const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
@@ -50,41 +52,6 @@ export const bridgeUpdateSchema = z.object({
   videoUrl: z.string().url().max(2_000).nullable().optional(),
   videoSize: z.number().int().nonnegative().safe().nullable().optional(),
 });
-
-export function parseScoreUrl(value: string) {
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    throw new RenderApiError("INVALID_OSU_URL", "osu! のスコアURLが正しくありません。", 400);
-  }
-  if (
-    url.protocol !== "https:" ||
-    url.hostname.toLowerCase() !== "osu.ppy.sh" ||
-    url.port && url.port !== "443" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash
-  ) {
-    throw new RenderApiError("INVALID_OSU_URL", "https://osu.ppy.sh のスコアURLだけ使用できます。", 400);
-  }
-  const match = /^\/scores\/(?:(osu)\/)?([1-9][0-9]{0,18})\/?$/.exec(url.pathname);
-  if (!match || BigInt(match[2]) > BigInt("9223372036854775807")) {
-    throw new RenderApiError("INVALID_OSU_URL", "osu!standard のスコアURLを指定してください。", 400);
-  }
-  return `https://osu.ppy.sh/scores/${match[1] ? "osu/" : ""}${match[2]}`;
-}
-
-export class RenderApiError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-  }
-}
 
 function safeEqual(left: string, right: string) {
   const a = Buffer.from(left);

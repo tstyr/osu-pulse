@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from .errors import ErrorCode, RenderError
 
 
-SCORE_PATH = re.compile(r"^/scores/(?:(osu)/)?([1-9][0-9]{0,18})/?$")
+SCORE_PATH = re.compile(r"^/scores/(?:(osu|mania)/)?([1-9][0-9]{0,18})/?$")
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,6 +21,8 @@ from .score_resolver import parse_score_url
 
 
 LOGGER = logging.getLogger("renderer.jobs")
+RULESET_BY_REPLAY_MODE = {0: "osu", 3: "mania"}
+SUPPORTED_RULESETS = frozenset(RULESET_BY_REPLAY_MODE.values())
 
 
 class JobManager:
@@ -132,13 +134,13 @@ class JobManager:
                 job.update(JobStatus.RESOLVING_SCORE, 0, "Resolving osu! score")
                 reference = parse_score_url(job.score_url or "")
                 job.metadata = await self.osu_api.get_score(reference)
-                if job.metadata.ruleset != "osu":
-                    raise RenderError(ErrorCode.UNSUPPORTED_RULESET, "Only osu!standard is supported")
+                if job.metadata.ruleset not in SUPPORTED_RULESETS:
+                    raise RenderError(ErrorCode.UNSUPPORTED_RULESET, "Only osu!standard and osu!mania are supported")
                 if job.metadata.has_replay is False:
                     raise RenderError(ErrorCode.REPLAY_UNAVAILABLE, "This score has no downloadable replay", http_status=404)
                 self._raise_if_cancelled(job)
                 job.update(JobStatus.DOWNLOADING_REPLAY, 2, "Downloading replay from osu! API")
-                replay = await self.osu_api.download_replay(reference.score_id, "osu")
+                replay = await self.osu_api.download_replay(reference, job.metadata.ruleset)
                 if len(replay) > self.settings.max_replay_bytes:
                     raise RenderError(ErrorCode.INVALID_REPLAY, "Downloaded replay exceeds the configured limit")
             else:
@@ -150,12 +152,15 @@ class JobManager:
             job.uploaded_replay = None
             info = parse_replay(replay)
             job.replay_info = info
-            if info.mode != 0:
-                raise RenderError(ErrorCode.UNSUPPORTED_RULESET, "Only osu!standard is supported")
+            replay_ruleset = RULESET_BY_REPLAY_MODE.get(info.mode)
+            if replay_ruleset is None:
+                raise RenderError(ErrorCode.UNSUPPORTED_RULESET, "Only osu!standard and osu!mania are supported")
+            if job.metadata and job.metadata.ruleset != replay_ruleset:
+                raise RenderError(ErrorCode.INVALID_REPLAY, "Score ruleset does not match the downloaded replay")
             if not job.metadata:
                 job.metadata = ScoreMetadata(
                     player_name=info.player_name,
-                    ruleset="osu",
+                    ruleset=replay_ruleset,
                     mods=mods_from_bits(info.mods_raw),
                     score=info.score,
                     accuracy=info.accuracy,

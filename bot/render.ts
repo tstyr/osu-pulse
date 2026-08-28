@@ -13,6 +13,7 @@ import {
   getAccountsByDiscord,
 } from "@/db/repository";
 import { getRecentScores } from "@/lib/osu/client";
+import type { OsuMode } from "@/lib/osu/modes";
 import type { OsuScore } from "@/lib/osu/types";
 
 import {
@@ -27,6 +28,7 @@ import { renderAccountChoiceName } from "./render-choice";
 
 type RenderableRecentPlay = {
   scoreId: string;
+  ruleset: Extract<OsuMode, "osu" | "mania">;
   pp: number | null;
   rank: string;
   username?: string;
@@ -42,6 +44,7 @@ type RenderableRecentResult = {
 };
 
 const RECENT_PLAY_CACHE_MS = 30_000;
+const RENDERABLE_RULESETS = ["osu", "mania"] as const;
 const recentPlayCache = new Map<
   string,
   { expiresAt: number; result: RenderableRecentResult }
@@ -60,14 +63,16 @@ async function fetchRenderableRecentPlays(
   if (accounts.length === 0) return { accountCount: 0, plays: [] };
 
   const results = await Promise.allSettled(
-    accounts.map(async (account) => ({
+    accounts.flatMap((account) => RENDERABLE_RULESETS.map(async (ruleset) => ({
       account,
-      scores: await getRecentScores(account.osuUserId, "osu", 100),
-    })),
+      ruleset,
+      scores: await getRecentScores(account.osuUserId, ruleset, 100),
+    }))),
   );
   const successful = results.filter(
     (result): result is PromiseFulfilledResult<{
       account: (typeof accounts)[number];
+      ruleset: (typeof RENDERABLE_RULESETS)[number];
       scores: OsuScore[];
     }> => result.status === "fulfilled",
   );
@@ -84,9 +89,11 @@ async function fetchRenderableRecentPlays(
     for (const score of value.scores) {
       if (score.has_replay !== true) continue;
       const scoreId = String(score.id);
-      if (!/^[1-9][0-9]{0,18}$/.test(scoreId) || unique.has(scoreId)) continue;
-      unique.set(scoreId, {
+      const key = `${value.ruleset}:${scoreId}`;
+      if (!/^[1-9][0-9]{0,18}$/.test(scoreId) || unique.has(key)) continue;
+      unique.set(key, {
         scoreId,
+        ruleset: value.ruleset,
         pp: score.pp,
         rank: score.rank,
         username: includeUsername ? value.account.username : undefined,
@@ -145,12 +152,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   OAUTH_FAILED: "❌ Rendererのosu! API設定が正しくありません。",
   REPLAY_UNAVAILABLE: "❌ このスコアのReplayは取得できません。\n\nReplayが保存されていない、またはダウンロードできないスコアの可能性があります。\n.osrファイルを持っている場合は直接添付してください。",
   INVALID_REPLAY: "❌ 有効なosu! Replayファイルとして読み取れません。",
-  UNSUPPORTED_RULESET: "❌ 現在レンダリングに対応しているのはosu!standardのみです。",
+  UNSUPPORTED_RULESET: "❌ 現在レンダリングに対応しているのはosu!standardとosu!maniaです。",
   BEATMAP_NOT_FOUND: "❌ 対応するBeatmapがosu! Songsフォルダにありません。",
   BEATMAP_DOWNLOAD_FAILED: "❌ Beatmapsetの自動ダウンロードに失敗しました。少し待って再試行してください。",
   DANSER_NOT_FOUND: "❌ danserが見つかりません。RendererのDANSER_PATHを確認してください。",
+  MANIA_RENDERER_NOT_FOUND: "❌ osu!mania Rendererが見つかりません。`renderer/install_mania_renderer.ps1`を実行してください。",
+  SKIN_NOT_FOUND: "❌ 使用するosu! Skinが見つかりません。RendererのSkin設定を確認してください。",
   FFMPEG_NOT_FOUND: "❌ FFmpegまたは指定した動画エンコーダーを利用できません。",
-  DANSER_CRASHED: "❌ danserが異常終了しました。Rendererログを確認してください。",
+  DANSER_CRASHED: "❌ Replay Rendererが異常終了しました。Rendererログを確認してください。",
   FFMPEG_CRASHED: "❌ 動画の生成に失敗しました。Rendererログを確認してください。",
   RENDER_TIMEOUT: "❌ レンダリングが制限時間を超えたため停止しました。",
   RENDER_CANCELLED: "レンダリングはキャンセルされました。",
@@ -193,7 +202,7 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
     const choices = recent.plays
       .map((play) => ({
         name: renderAccountChoiceName(play),
-        value: play.scoreId,
+        value: `${play.ruleset}:${play.scoreId}`,
       }))
       .filter((choice) => !query || choice.name.toLocaleLowerCase("ja").includes(query))
       .slice(0, 25);
@@ -279,7 +288,8 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
   }
 
   if (accountScoreId) {
-    if (!/^[1-9][0-9]{0,18}$/.test(accountScoreId)) {
+    const selection = /^(?:(osu|mania):)?([1-9][0-9]{0,18})$/.exec(accountScoreId);
+    if (!selection) {
       await interaction.reply({ content: "❌ 選択したプレイが正しくありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
       return;
     }
@@ -295,12 +305,15 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       await interaction.reply({ content: "❌ 先に `/osu link` でアカウントを登録してください。", flags: MessageFlags.Ephemeral });
       return;
     }
-    const play = recent.plays.find((candidate) => candidate.scoreId === accountScoreId);
+    const [, selectedRuleset, selectedScoreId] = selection;
+    const play = recent.plays.find((candidate) => (
+      candidate.scoreId === selectedScoreId && (!selectedRuleset || candidate.ruleset === selectedRuleset)
+    ));
     if (!play) {
-      await interaction.reply({ content: "❌ このプレイは直近100件にないか、ダウンロード可能なReplayがありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "❌ このプレイはstd/maniaの直近100件にないか、ダウンロード可能なReplayがありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
       return;
     }
-    url = `https://osu.ppy.sh/scores/osu/${play.scoreId}`;
+    url = `https://osu.ppy.sh/scores/${play.scoreId}`;
   }
 
   await interaction.deferReply();
@@ -315,7 +328,16 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
 
   try {
     const health = await client.health();
-    if (!health.danser || !health.ffmpeg || !health.osu_songs || !health.songs_index_ready || (url && !health.osu_api)) {
+    if (
+      !health.danser ||
+      !health.mania_renderer ||
+      !health.ffmpeg ||
+      !health.osu_songs ||
+      !health.standard_skin ||
+      !health.mania_skin ||
+      !health.songs_index_ready ||
+      (url && !health.osu_api)
+    ) {
       await interaction.editReply({ content: degradedMessage(health), embeds: [] });
       return;
     }
@@ -396,6 +418,7 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
         { name: "Rendering", value: String(health.rendering), inline: true },
         { name: "Encoder", value: health.nvenc ? "NVENC" : health.amf ? "AMD AMF" : "CPU", inline: true },
         { name: "danser", value: health.danser ? "OK" : "NOT FOUND", inline: true },
+        { name: "mania", value: health.mania_renderer ? "OK" : "NOT FOUND", inline: true },
         { name: "FFmpeg", value: health.ffmpeg ? "OK" : "NOT FOUND", inline: true },
         { name: "Songs", value: health.osu_songs ? `${health.songs_index_count.toLocaleString()} maps` : "NOT FOUND", inline: true },
         { name: "osu! API", value: health.osu_api ? "OK" : "MISSING CREDENTIALS", inline: true },
@@ -409,8 +432,11 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
 function degradedMessage(health: RendererHealth) {
   const missing = [
     !health.danser && "danser",
+    !health.mania_renderer && "mania Renderer",
     !health.ffmpeg && "FFmpeg",
     !health.osu_songs && "osu! Songs",
+    !health.standard_skin && "Appu Skin",
+    !health.mania_skin && "R Skin",
     !health.songs_index_ready && "Songs Index",
     !health.osu_api && "osu! API credentials",
   ].filter(Boolean).join(", ");

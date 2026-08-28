@@ -82,11 +82,12 @@ class OsuApiClient:
         raise AssertionError("unreachable")
 
     async def get_score(self, reference: ScoreReference) -> ScoreMetadata:
+        paths = [f"/api/v2/scores/{reference.score_id}"]
         if reference.ruleset_hint:
-            path = f"/api/v2/scores/{reference.ruleset_hint}/{reference.score_id}"
-        else:
-            path = f"/api/v2/scores/{reference.score_id}"
-        response = await self._get(path)
+            paths.insert(0, f"/api/v2/scores/{reference.ruleset_hint}/{reference.score_id}")
+        response = await self._get(paths[0])
+        if response.status_code == 404 and len(paths) > 1:
+            response = await self._get(paths[1])
         if response.status_code == 404:
             raise RenderError(ErrorCode.SCORE_NOT_FOUND, "Score not found", http_status=404)
         if response.status_code != 200:
@@ -97,8 +98,13 @@ class OsuApiClient:
             raise RenderError(ErrorCode.OSU_API_UNAVAILABLE, "osu! API returned invalid JSON", http_status=503) from exc
         return normalize_score(data, reference.score_id)
 
-    async def download_replay(self, score_id: int, ruleset: str) -> bytes:
-        response = await self._get(f"/api/v2/scores/{ruleset}/{score_id}/download", accept="application/octet-stream")
+    async def download_replay(self, reference: ScoreReference, ruleset: str) -> bytes:
+        generic = f"/api/v2/scores/{reference.score_id}/download"
+        legacy = f"/api/v2/scores/{ruleset}/{reference.score_id}/download"
+        paths = [legacy, generic] if reference.ruleset_hint else [generic, legacy]
+        response = await self._get(paths[0], accept="application/octet-stream")
+        if response.status_code == 404:
+            response = await self._get(paths[1], accept="application/octet-stream")
         if response.status_code in {404, 410, 422}:
             raise RenderError(ErrorCode.REPLAY_UNAVAILABLE, "Replay is unavailable", http_status=404)
         if response.status_code != 200:

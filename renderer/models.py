@@ -51,6 +51,12 @@ class ReplayInfo:
 
     @property
     def accuracy(self) -> float | None:
+        if self.mode == 3:
+            total = self.count_geki + self.count_300 + self.count_katu + self.count_100 + self.count_50 + self.count_miss
+            if total <= 0:
+                return None
+            weighted = 300 * (self.count_geki + self.count_300) + 200 * self.count_katu + 100 * self.count_100 + 50 * self.count_50
+            return weighted / (300 * total)
         total = self.count_300 + self.count_100 + self.count_50 + self.count_miss
         if total <= 0:
             return None

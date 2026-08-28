@@ -27,6 +27,7 @@
 
 # local replay renderer state
 /renderer/.venv/
+/renderer/.venv-mania/
 /renderer/temp/
 /renderer/output/
 /renderer/logs/

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from renderer.danser_runner import DanserRunner, progress_from_line
+from renderer.models import RenderJob, ScoreMetadata
 from renderer.prerequisites import DependencyState
+from renderer.render_options import RenderOptions
 
 
 class DanserProgressTests(unittest.TestCase):
@@ -19,3 +23,19 @@ class DanserProgressTests(unittest.TestCase):
         self.assertEqual(DanserRunner(settings, DependencyState(nvenc=True, amf=True))._encoder(), "h264_nvenc")
         self.assertEqual(DanserRunner(settings, DependencyState(amf=True))._encoder(), "h264_amf")
         self.assertEqual(DanserRunner(settings, DependencyState())._encoder(), "libx264")
+
+    def test_standard_command_selects_appu_skin(self) -> None:
+        settings = SimpleNamespace(
+            songs_path=Path("C:/osu/Songs"),
+            osu_skins_path=Path("C:/osu/Skins"),
+            standard_skin="osu-pulse Appu",
+            output_path=Path("C:/output"),
+            danser_path=Path("C:/danser/danser-cli.exe"),
+            danser_settings="default",
+        )
+        job = RenderJob("job", "user", "replay", "source", RenderOptions(), metadata=ScoreMetadata(ruleset="osu"))
+        command = DanserRunner(settings, DependencyState())._command(job, Path("C:/replay.osr"), "libx264")
+        self.assertIn("-skin=osu-pulse Appu", command)
+        patch = json.loads(next(value.removeprefix("-sPatch=") for value in command if value.startswith("-sPatch=")))
+        self.assertEqual(patch["General"]["OsuSkinsDir"], "C:\\osu\\Skins")
+        self.assertEqual(patch["Skin"]["CurrentSkin"], "osu-pulse Appu")

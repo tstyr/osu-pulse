@@ -9,8 +9,10 @@ from renderer.score_resolver import parse_score_url
 class ScoreResolverTests(unittest.TestCase):
     def test_accepts_supported_score_urls(self) -> None:
         legacy = parse_score_url("https://osu.ppy.sh/scores/osu/1234567890/?foo=bar")
+        mania = parse_score_url("https://osu.ppy.sh/scores/mania/555")
         modern = parse_score_url("https://osu.ppy.sh/scores/987654321")
         self.assertEqual((legacy.score_id, legacy.ruleset_hint), (1_234_567_890, "osu"))
+        self.assertEqual((mania.score_id, mania.ruleset_hint), (555, "mania"))
         self.assertEqual((modern.score_id, modern.ruleset_hint), (987_654_321, None))
 
     def test_rejects_ssrf_and_unsupported_schemes(self) -> None:

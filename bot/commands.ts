@@ -107,10 +107,10 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName("render")
-    .setDescription("osu!standard ReplayをローカルPCで動画化")
+    .setDescription("osu!standard / mania ReplayをローカルPCで動画化")
     .addStringOption((option) => option
       .setName("account")
-      .setDescription("/osu link済みアカウントの直近プレイ")
+      .setDescription("/osu link済みアカウントの直近プレイ（std / mania）")
       .setAutocomplete(true))
     .addStringOption((option) => option.setName("url").setDescription("osu! Result URL"))
     .addAttachmentOption((option) => option.setName("replay").setDescription(".osr Replayファイル"))

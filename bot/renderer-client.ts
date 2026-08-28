@@ -6,8 +6,11 @@ export type RendererHealth = {
   queue_size: number;
   rendering: number;
   danser: boolean;
+  mania_renderer: boolean;
   ffmpeg: boolean;
   osu_songs: boolean;
+  standard_skin: boolean;
+  mania_skin: boolean;
   osu_api: boolean;
   nvenc: boolean;
   amf: boolean;

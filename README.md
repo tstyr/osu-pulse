@@ -24,7 +24,7 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/remind`、`/pomodoro` とVercel Workflowによる耐久タイマー
 - `/music` から再生・キュー・一時停止・スキップ・音量・停止。再生時には常設ボタン付きパネルを表示し、15秒ごとに進捗を更新
 - `/stats` でBot利用統計
-- `/render` でosu!standardのResult URLまたは`.osr`をローカルdanserでMP4化
+- `/render` でosu!standard / maniaのResult URL、登録アカウントの直近Replay、または`.osr`をMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
 - 状況カテゴリは15秒ごとに再取得。Discordの添付上限を超えた完成動画はCloudflare R2（未設定時はVercel Blob）へアップロードしてダウンロードボタンを表示
@@ -66,13 +66,14 @@ docker compose -f lavalink/compose.yml up -d
 RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします。クラウドブリッジもPCからVercelへの外向き通信だけを使い、ポート開放やトンネルは不要です。Botが停止中でも、Rendererさえ起動していればWebの`/render`から利用できます。Discordの`/render`を使う場合だけBotも同じWindows PCで起動します。
 
 1. `powershell -ExecutionPolicy Bypass -File renderer/install_danser.ps1` を実行します。公式`Wieku/danser-go`の最新安定Windows版を`renderer/local/danser`へ配置します。
-2. `renderer/.env.example` を `renderer/.env` にコピーします。
-3. `FFMPEG_PATH`、`OSU_SONGS_PATH`、`OSU_CLIENT_ID`、`OSU_CLIENT_SECRET`を設定します。既定の`DANSER_PATH`は同梱インストーラーの配置先を使います。
-4. Bot側の`.env.local`とRenderer側の`renderer/.env`へ同じ`RENDER_SERVER_TOKEN`を設定します（空でもloopback限定で動作します）。
-5. Web連携ではVercel Blobを接続し、`RENDER_CLOUD_URL`、`RENDER_BRIDGE_TOKEN`、`BLOB_READ_WRITE_TOKEN`をRenderer側に設定します。このリポジトリをVercel CLIでリンク済みなら`renderer/.venv/Scripts/python.exe -m renderer.configure_cloud_bridge`で安全に同期できます。
-6. `renderer/start_renderer.bat`をダブルクリックします。初回だけPython仮想環境と小さなAPI依存を自動セットアップします。
+2. std用Appuとmania用R Skinをosu!の`Skins`へ展開し、`OSU_STANDARD_SKIN`と`OSU_MANIA_SKIN`へフォルダ名を設定します。既定名は`osu-pulse Appu`と`osu-pulse R Skin v3.0 Bars`です。
+3. `renderer/.env.example` を `renderer/.env` にコピーします。
+4. `FFMPEG_PATH`、`OSU_SONGS_PATH`、`OSU_CLIENT_ID`、`OSU_CLIENT_SECRET`を設定します。既定の`DANSER_PATH`は同梱インストーラーの配置先を使います。
+5. Bot側の`.env.local`とRenderer側の`renderer/.env`へ同じ`RENDER_SERVER_TOKEN`を設定します（空でもloopback限定で動作します）。
+6. Web連携ではVercel Blobを接続し、`RENDER_CLOUD_URL`、`RENDER_BRIDGE_TOKEN`、`BLOB_READ_WRITE_TOKEN`をRenderer側に設定します。このリポジトリをVercel CLIでリンク済みなら`renderer/.venv/Scripts/python.exe -m renderer.configure_cloud_bridge`で安全に同期できます。
+7. `renderer/start_renderer.bat`をダブルクリックします。初回はstd側のPython環境に加え、Python 3.12+のmania専用環境と固定revisionの[R3D osu!mania renderer](https://github.com/R3dWolfie/osu-mania-renderer)を自動導入します。手動導入は`powershell -ExecutionPolicy Bypass -File renderer/install_mania_renderer.ps1`です。
 
-既定値は1920x1080・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。必要なBeatmapがSongsにない場合は、osu! APIでBeatmapsetを特定し、Hinamizawa mirrorから動画なしの`.osz`を自動取得・安全に展開してインデックスを更新します（`AUTO_DOWNLOAD_BEATMAPS=false`で無効化）。danserは内部でFFmpegを利用し、利用可能なGPUエンコーダを自動選択します。GPUエンコードに失敗した場合はlibx264へフォールバックします。
+既定値は1920x1080・60fps・Original speed・Motion Blur OFFです。stdはdanser + Appu、maniaは専用ModernGL renderer + R Skinへ自動分岐します。起動時に両Renderer、両Skin、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。必要なBeatmapがSongsにない場合は、osu! APIでBeatmapsetを特定し、Hinamizawa mirrorから動画なしの`.osz`を自動取得・安全に展開してインデックスを更新します（`AUTO_DOWNLOAD_BEATMAPS=false`で無効化）。利用可能なGPUエンコーダを自動選択し、失敗時はlibx264へフォールバックします。maniaでは現在Custom speedとMotion Blurは利用できません。
 
 Discordコマンドを追加・変更した後は一度登録し直します。
 
@@ -85,6 +86,8 @@ npm run bot:start
 
 ```text
 /render url:https://osu.ppy.sh/scores/osu/1234567890
+/render url:https://osu.ppy.sh/scores/mania/1234567890
+/render account:<pp・判定・STD/MANIA・曲名から選択>
 /render replay:<myplay.osr> resolution:1920x1080 fps:60
 /render-status
 /server-status setup
