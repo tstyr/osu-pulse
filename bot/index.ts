@@ -51,4 +51,11 @@ async function shutdown(signal: string) {
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-await client.login(token);
+async function main() {
+  await client.login(token);
+}
+
+void main().catch((error) => {
+  console.error("[worker] failed to start:", error);
+  process.exitCode = 1;
+});
