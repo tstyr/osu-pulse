@@ -34,7 +34,7 @@ if not exist "%RENDERER_VENV%\Scripts\python.exe" (
     )
 )
 
-"%RENDERER_VENV%\Scripts\python.exe" -c "import fastapi,httpx,dotenv,multipart,uvicorn" >nul 2>nul
+"%RENDERER_VENV%\Scripts\python.exe" -c "import fastapi,httpx,dotenv,multipart,psutil,uvicorn" >nul 2>nul
 if errorlevel 1 (
     if /i "%~1"=="--check" (
         echo [ERROR] Renderer Python dependencies are not installed.

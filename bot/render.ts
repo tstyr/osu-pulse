@@ -38,6 +38,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_REPLAY: "❌ 有効なosu! Replayファイルとして読み取れません。",
   UNSUPPORTED_RULESET: "❌ 現在レンダリングに対応しているのはosu!standardのみです。",
   BEATMAP_NOT_FOUND: "❌ 対応するBeatmapがosu! Songsフォルダにありません。",
+  BEATMAP_DOWNLOAD_FAILED: "❌ Beatmapsetの自動ダウンロードに失敗しました。少し待って再試行してください。",
   DANSER_NOT_FOUND: "❌ danserが見つかりません。RendererのDANSER_PATHを確認してください。",
   FFMPEG_NOT_FOUND: "❌ FFmpegまたは指定した動画エンコーダーを利用できません。",
   DANSER_CRASHED: "❌ danserが異常終了しました。Rendererログを確認してください。",
@@ -203,7 +204,7 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
       .addFields(
         { name: "Queue", value: String(health.queue_size), inline: true },
         { name: "Rendering", value: String(health.rendering), inline: true },
-        { name: "Encoder", value: health.nvenc ? "NVENC" : "CPU", inline: true },
+        { name: "Encoder", value: health.nvenc ? "NVENC" : health.amf ? "AMD AMF" : "CPU", inline: true },
         { name: "danser", value: health.danser ? "OK" : "NOT FOUND", inline: true },
         { name: "FFmpeg", value: health.ffmpeg ? "OK" : "NOT FOUND", inline: true },
         { name: "Songs", value: health.osu_songs ? `${health.songs_index_count.toLocaleString()} maps` : "NOT FOUND", inline: true },

@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from .beatmap_index import BeatmapIndex
+from .beatmap_downloader import BeatmapDownloader
 from .beatmap_resolver import BeatmapResolver
 from .config import Settings, settings as default_settings
 from .cloud_bridge import CloudRenderBridge
@@ -25,6 +26,7 @@ from .jobs import JobManager
 from .osu_api import OsuApiClient
 from .prerequisites import DependencyState, inspect_dependencies
 from .render_options import RenderOptions
+from .system_metrics import SystemMetricsCollector
 
 
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -60,7 +62,15 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             logging.getLogger("renderer.server").exception("Beatmap indexing failed")
             dependencies.songs_index_error = str(exc)[:200]
         osu_api = OsuApiClient(settings.osu_client_id, settings.osu_client_secret)
-        manager = JobManager(settings, osu_api, BeatmapResolver(beatmap_index), DanserRunner(settings, dependencies))
+        beatmap_downloader = BeatmapDownloader(settings) if settings.auto_download_beatmaps else None
+        metrics = SystemMetricsCollector(settings.output_path)
+        manager = JobManager(
+            settings,
+            osu_api,
+            BeatmapResolver(beatmap_index),
+            DanserRunner(settings, dependencies),
+            beatmap_downloader,
+        )
         await manager.start()
         cloud_bridge = CloudRenderBridge(settings, manager, dependencies)
         await cloud_bridge.start()
@@ -70,12 +80,15 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         app.state.osu_api = osu_api
         app.state.jobs = manager
         app.state.cloud_bridge = cloud_bridge
+        app.state.metrics = metrics
         print_startup_summary(settings, dependencies)
         try:
             yield
         finally:
             await cloud_bridge.stop()
             await manager.stop()
+            if beatmap_downloader:
+                await beatmap_downloader.close()
             await osu_api.close()
             if file_handler:
                 logging.getLogger().removeHandler(file_handler)
@@ -100,12 +113,14 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
     async def health(request: Request) -> dict[str, Any]:
         manager: JobManager = request.app.state.jobs
         dependencies: DependencyState = request.app.state.dependencies
+        metrics: SystemMetricsCollector = request.app.state.metrics
         return {
             "status": dependencies.status,
             "busy": manager.active_count > 0,
             "queue_size": manager.queue_size,
             "rendering": manager.active_count,
             **dependencies.public_dict(),
+            **await metrics.snapshot(manager),
         }
 
     @app.post("/render", status_code=202, dependencies=[Depends(authorize)])

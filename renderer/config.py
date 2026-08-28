@@ -102,6 +102,10 @@ class Settings:
     renderer_id: str = "local-renderer"
     blob_upload_script: Path = RENDERER_ROOT / "upload_blob.mjs"
     project_root: Path = PROJECT_ROOT
+    auto_download_beatmaps: bool = True
+    beatmap_download_no_video: bool = True
+    max_beatmapset_bytes: int = 256 * 1024 * 1024
+    stats_path: Path = RENDERER_ROOT / "stats.json"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -140,6 +144,10 @@ class Settings:
             renderer_id=(os.getenv("RENDERER_ID") or socket.gethostname() or "local-renderer")[:64],
             blob_upload_script=(RENDERER_ROOT / "upload_blob.mjs").resolve(),
             project_root=PROJECT_ROOT,
+            auto_download_beatmaps=_bool_env("AUTO_DOWNLOAD_BEATMAPS", True),
+            beatmap_download_no_video=_bool_env("BEATMAP_DOWNLOAD_NO_VIDEO", True),
+            max_beatmapset_bytes=_int_env("MAX_BEATMAPSET_BYTES", 256 * 1024 * 1024),
+            stats_path=_path_env("RENDER_STATS_PATH", RENDERER_ROOT / "stats.json"),
         )
 
     def ensure_directories(self) -> None:

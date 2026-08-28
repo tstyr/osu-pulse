@@ -22,10 +22,11 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - 設定チャンネルへ新規リザルトを自動投稿
 - 日次成長サマリーをDM送信
 - `/remind`、`/pomodoro` とVercel Workflowによる耐久タイマー
-- `/music` から再生・キュー・一時停止・スキップ・音量・停止
+- `/music` から再生・キュー・一時停止・スキップ・音量・停止。再生時には常設ボタン付きパネルを表示し、15秒ごとに進捗を更新
 - `/stats` でBot利用統計
 - `/render` でosu!standardのResult URLまたは`.osr`をローカルdanserでMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
+- `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
 - Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成MP4をVercel Blobで受け取る
 
 ## ローカル起動
@@ -70,7 +71,7 @@ RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします�
 5. Web連携ではVercel Blobを接続し、`RENDER_CLOUD_URL`、`RENDER_BRIDGE_TOKEN`、`BLOB_READ_WRITE_TOKEN`をRenderer側に設定します。このリポジトリをVercel CLIでリンク済みなら`renderer/.venv/Scripts/python.exe -m renderer.configure_cloud_bridge`で安全に同期できます。
 6. `renderer/start_renderer.bat`をダブルクリックします。初回だけPython仮想環境と小さなAPI依存を自動セットアップします。
 
-既定値は2560x1600・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。danserは内部でFFmpegを利用し、利用可能なGPUエンコーダを自動選択します。GPUエンコードに失敗した場合はlibx264へフォールバックします。
+既定値は2560x1600・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。必要なBeatmapがSongsにない場合は、osu! APIでBeatmapsetを特定し、Hinamizawa mirrorから動画なしの`.osz`を自動取得・安全に展開してインデックスを更新します（`AUTO_DOWNLOAD_BEATMAPS=false`で無効化）。danserは内部でFFmpegを利用し、利用可能なGPUエンコーダを自動選択します。GPUエンコードに失敗した場合はlibx264へフォールバックします。
 
 Discordコマンドを追加・変更した後は一度登録し直します。
 
@@ -85,6 +86,9 @@ npm run bot:start
 /render url:https://osu.ppy.sh/scores/osu/1234567890
 /render replay:<myplay.osr> resolution:2560x1600 fps:60
 /render-status
+/server-status setup
+/server-status refresh
+/server-status remove
 ```
 
 Rendererを止めるときは起動したBATウィンドウを閉じます。再起動後はBotを再起動せずに利用できます。出力は`renderer/output`に保存され、既定で24時間後に削除されます。Jobの一時ファイルは成功・失敗・キャンセル後に削除されます（`KEEP_FAILED_TEMP=true`を除く）。

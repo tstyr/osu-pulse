@@ -5,11 +5,12 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from renderer.beatmap_index import BeatmapIndex
 from renderer.beatmap_resolver import BeatmapResolver
 from renderer.jobs import JobManager
-from renderer.models import JobStatus, RenderJob
+from renderer.models import JobStatus, RenderJob, ScoreMetadata
 from renderer.render_options import RenderOptions
 from renderer.tests.helpers import replay_bytes
 from renderer.tests.test_api import test_settings
@@ -20,6 +21,11 @@ class FakeRunner:
         self.output_path = output_path
         self.active = 0
         self.maximum_active = 0
+        self.dependencies = SimpleNamespace(
+            songs_index_ready=False,
+            songs_index_count=0,
+            songs_index_error=None,
+        )
 
     async def render(self, job: RenderJob, _replay_path: Path) -> Path:
         self.active += 1
@@ -35,6 +41,29 @@ class FakeRunner:
 
 class FakeOsuApi:
     pass
+
+
+class FakeLookupApi:
+    def __init__(self) -> None:
+        self.checksum: str | None = None
+
+    async def lookup_beatmap(self, checksum: str) -> ScoreMetadata:
+        self.checksum = checksum
+        return ScoreMetadata(beatmap_id=987, beatmapset_id=654, title="Auto map")
+
+
+class FakeDownloader:
+    def __init__(self, songs_path: Path, map_content: bytes) -> None:
+        self.songs_path = songs_path
+        self.map_content = map_content
+        self.installed: list[int] = []
+
+    async def install(self, beatmapset_id: int) -> Path:
+        self.installed.append(beatmapset_id)
+        destination = self.songs_path / f"{beatmapset_id} Auto"
+        destination.mkdir(parents=True)
+        (destination / "auto.osu").write_bytes(self.map_content)
+        return destination
 
 
 class JobQueueTests(unittest.IsolatedAsyncioTestCase):
@@ -68,5 +97,44 @@ class JobQueueTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.01)
                 self.assertTrue(all(job.status == JobStatus.COMPLETED for job in jobs))
                 self.assertEqual(runner.maximum_active, 1)
+            finally:
+                await manager.stop()
+
+    async def test_missing_beatmap_is_looked_up_downloaded_and_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = test_settings(root)
+            settings.ensure_directories()
+            map_content = b"osu file format v14\n[Metadata]\nBeatmapID:987\nBeatmapSetID:654\n"
+            checksum = hashlib.md5(map_content, usedforsecurity=False).hexdigest()
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            runner = FakeRunner(settings.output_path)
+            osu_api = FakeLookupApi()
+            downloader = FakeDownloader(settings.songs_path, map_content)
+            manager = JobManager(  # type: ignore[arg-type]
+                settings,
+                osu_api,
+                BeatmapResolver(index),
+                runner,
+                downloader,
+            )
+            await manager.start()
+            try:
+                job = await manager.submit_replay(
+                    "100",
+                    replay_bytes(checksum, replay_md5="4" * 32),
+                    RenderOptions(),
+                )
+                deadline = asyncio.get_running_loop().time() + 5
+                while job.status not in {JobStatus.COMPLETED, JobStatus.FAILED}:
+                    if asyncio.get_running_loop().time() > deadline:
+                        self.fail("automatic beatmap preparation did not finish")
+                    await asyncio.sleep(0.01)
+
+                self.assertEqual(job.status, JobStatus.COMPLETED)
+                self.assertEqual(osu_api.checksum, checksum)
+                self.assertEqual(downloader.installed, [654])
+                self.assertEqual(runner.dependencies.songs_index_count, 1)
             finally:
                 await manager.stop()

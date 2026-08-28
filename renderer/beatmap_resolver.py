@@ -20,6 +20,9 @@ class BeatmapResolver:
             raise RenderError(ErrorCode.BEATMAP_NOT_FOUND, "Resolved beatmap path is outside Songs directory", http_status=404)
         return BeatmapEntry(resolved, entry.beatmap_id, entry.md5)
 
+    def rebuild(self) -> int:
+        return self.index.rebuild()
+
     @staticmethod
     def metadata(path: Path) -> dict[str, str | int | None]:
         try:

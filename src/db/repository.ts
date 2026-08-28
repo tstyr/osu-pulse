@@ -12,6 +12,7 @@ import {
 
 import type { OsuMode } from "@/lib/osu/modes";
 import type { OsuUser } from "@/lib/osu/types";
+import type { ServerStatusChannelIds } from "./schema";
 
 import { getDb } from "./index";
 import {
@@ -184,6 +185,58 @@ export async function getGuildSettings(guildId: string) {
   return getDb().query.guildSettings.findFirst({
     where: eq(guildSettings.guildId, guildId),
   });
+}
+
+export async function configureServerStatus(input: {
+  guildId: string;
+  categoryId: string;
+  channelIds: ServerStatusChannelIds;
+}) {
+  const [settings] = await getDb()
+    .insert(guildSettings)
+    .values({
+      guildId: input.guildId,
+      statusEnabled: true,
+      statusCategoryId: input.categoryId,
+      statusChannelIds: input.channelIds,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: guildSettings.guildId,
+      set: {
+        statusEnabled: true,
+        statusCategoryId: input.categoryId,
+        statusChannelIds: input.channelIds,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return settings;
+}
+
+export async function disableServerStatus(guildId: string) {
+  const [settings] = await getDb()
+    .update(guildSettings)
+    .set({
+      statusEnabled: false,
+      statusCategoryId: null,
+      statusChannelIds: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(guildSettings.guildId, guildId))
+    .returning();
+  return settings;
+}
+
+export async function listServerStatusSettings() {
+  return getDb()
+    .select({
+      guildId: guildSettings.guildId,
+      statusCategoryId: guildSettings.statusCategoryId,
+      statusChannelIds: guildSettings.statusChannelIds,
+    })
+    .from(guildSettings)
+    .where(eq(guildSettings.statusEnabled, true));
 }
 
 export async function getAnnouncementTargets(accountId: string) {

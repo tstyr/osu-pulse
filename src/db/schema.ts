@@ -79,12 +79,30 @@ export const accounts = pgTable(
   ],
 );
 
+export type ServerStatusChannelIds = Partial<
+  Record<
+    | "renderer"
+    | "cpu"
+    | "gpu"
+    | "memory"
+    | "disk"
+    | "network"
+    | "render"
+    | "videos"
+    | "jobs",
+    string
+  >
+>;
+
 export const guildSettings = pgTable("guild_settings", {
   guildId: text("guild_id").primaryKey(),
   resultChannelId: text("result_channel_id"),
   announcementsEnabled: boolean("announcements_enabled").notNull().default(true),
   minimumPp: doublePrecision("minimum_pp").notNull().default(0),
   locale: text("locale").notNull().default("ja"),
+  statusEnabled: boolean("status_enabled").notNull().default(false),
+  statusCategoryId: text("status_category_id"),
+  statusChannelIds: jsonb("status_channel_ids").$type<ServerStatusChannelIds>(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

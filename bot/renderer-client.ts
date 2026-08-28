@@ -10,9 +10,35 @@ export type RendererHealth = {
   osu_songs: boolean;
   osu_api: boolean;
   nvenc: boolean;
+  amf: boolean;
   songs_index_ready: boolean;
   songs_index_count: number;
   songs_index_error?: string | null;
+  system: {
+    cpu_percent: number;
+    gpu_percent: number | null;
+    memory_used_bytes: number;
+    memory_total_bytes: number;
+    memory_percent: number;
+    disk_used_bytes: number;
+    disk_total_bytes: number;
+    disk_percent: number;
+    network_received_bytes: number;
+    network_sent_bytes: number;
+    uptime_seconds: number;
+  };
+  render_stats: {
+    queue_size: number;
+    active_count: number;
+    active_status: string;
+    active_progress: number;
+    processed_total: number;
+    completed_total: number;
+    failed_total: number;
+    cancelled_total: number;
+    video_count: number;
+    video_bytes: number;
+  };
 };
 
 export type RenderMetadata = {

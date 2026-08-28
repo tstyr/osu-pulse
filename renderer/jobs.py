@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .beatmap_downloader import BeatmapDownloader
 from .beatmap_resolver import BeatmapResolver
 from .config import Settings
 from .danser_runner import DanserRunner
@@ -29,11 +30,13 @@ class JobManager:
         osu_api: OsuApiClient,
         beatmaps: BeatmapResolver,
         runner: DanserRunner,
+        beatmap_downloader: BeatmapDownloader | None = None,
     ) -> None:
         self.settings = settings
         self.osu_api = osu_api
         self.beatmaps = beatmaps
         self.runner = runner
+        self.beatmap_downloader = beatmap_downloader
         self.jobs: dict[str, RenderJob] = {}
         self._render_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_ids: list[str] = []
@@ -41,6 +44,9 @@ class JobManager:
         self._workers: list[asyncio.Task[None]] = []
         self._cleanup_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._beatmap_index_lock = asyncio.Lock()
+        self._stats_lock = asyncio.Lock()
+        self._lifetime_stats = self._load_lifetime_stats()
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_old_outputs)
@@ -160,11 +166,8 @@ class JobManager:
                 job.metadata.player_name = job.metadata.player_name or info.player_name
                 job.metadata.mods = job.metadata.mods or mods_from_bits(info.mods_raw)
 
-            job.update(JobStatus.RESOLVING_BEATMAP, 4, "Resolving beatmap in local Songs directory")
-            beatmap = self.beatmaps.resolve(
-                replay_md5=info.beatmap_md5,
-                beatmap_id=job.metadata.beatmap_id,
-            )
+            job.update(JobStatus.RESOLVING_BEATMAP, 4, "Resolving beatmap")
+            beatmap = await self._resolve_beatmap(job, info.beatmap_md5)
             job.beatmap_path = beatmap.path
             job.metadata.beatmap_id = job.metadata.beatmap_id or beatmap.beatmap_id
             local_metadata = self.beatmaps.metadata(beatmap.path)
@@ -198,6 +201,36 @@ class JobManager:
             LOGGER.exception("job=%s unexpected preparation failure", job.id)
             await self._mark_failed(job, RenderError(ErrorCode.INTERNAL_ERROR, "Unexpected render preparation error"))
 
+    async def _resolve_beatmap(self, job: RenderJob, checksum: str):
+        assert job.metadata
+        try:
+            return self.beatmaps.resolve(replay_md5=checksum, beatmap_id=job.metadata.beatmap_id)
+        except RenderError as initial_error:
+            if initial_error.code != ErrorCode.BEATMAP_NOT_FOUND or not self.settings.auto_download_beatmaps or not self.beatmap_downloader:
+                raise
+
+        if not job.metadata.beatmapset_id:
+            job.update(JobStatus.RESOLVING_BEATMAP, 4, "Looking up missing beatmap by replay checksum")
+            lookup = await self.osu_api.lookup_beatmap(checksum)
+            self._merge_metadata(job.metadata, lookup)
+        if not job.metadata.beatmapset_id:
+            raise RenderError(ErrorCode.BEATMAP_NOT_FOUND, "Beatmapset could not be identified", http_status=404)
+
+        job.update(JobStatus.RESOLVING_BEATMAP, 4, f"Downloading beatmapset {job.metadata.beatmapset_id}")
+        await self.beatmap_downloader.install(job.metadata.beatmapset_id)
+        async with self._beatmap_index_lock:
+            count = await asyncio.to_thread(self.beatmaps.rebuild)
+            self.runner.dependencies.songs_index_ready = self.beatmaps.index.ready
+            self.runner.dependencies.songs_index_count = count
+            self.runner.dependencies.songs_index_error = self.beatmaps.index.last_error
+        return self.beatmaps.resolve(replay_md5=checksum, beatmap_id=job.metadata.beatmap_id)
+
+    @staticmethod
+    def _merge_metadata(target: ScoreMetadata, source: ScoreMetadata) -> None:
+        for name in ("beatmap_id", "beatmapset_id", "artist", "title", "difficulty", "mapper"):
+            if getattr(target, name) is None:
+                setattr(target, name, getattr(source, name))
+
     async def _worker(self, worker_index: int) -> None:
         while True:
             job_id = await self._render_queue.get()
@@ -218,6 +251,7 @@ class JobManager:
                 job.output_path = output
                 job.completed_at = utc_now()
                 job.update(JobStatus.COMPLETED, 100, "Render completed")
+                await self._record_terminal("completed")
                 LOGGER.info("job=%s worker=%s render_end duration=%s result=completed", job.id, worker_index, job.public_dict()["render_duration_seconds"])
                 await self._cleanup_temp(job, keep=False)
             except RenderCancelled:
@@ -253,6 +287,7 @@ class JobManager:
         job.error = error.message[:500]
         job.completed_at = utc_now()
         job.update(JobStatus.FAILED, job.progress, error.message)
+        await self._record_terminal("failed")
         LOGGER.error("job=%s user=%s result=failed error_code=%s error=%s", job.id, job.user_id, error.code.value, error.message)
         await self._cleanup_temp(job, keep=self.settings.keep_failed_temp)
 
@@ -263,6 +298,7 @@ class JobManager:
         job.error = "Render cancelled"
         job.completed_at = utc_now()
         job.update(JobStatus.CANCELLED, job.progress, "Render cancelled")
+        await self._record_terminal("cancelled")
         LOGGER.info("job=%s user=%s result=cancelled", job.id, job.user_id)
         await self._cleanup_temp(job, keep=False)
 
@@ -316,3 +352,56 @@ class JobManager:
         while True:
             await asyncio.sleep(3600)
             await asyncio.to_thread(self.cleanup_old_outputs)
+
+    def metrics_snapshot(self) -> dict[str, object]:
+        completed = int(self._lifetime_stats.get("completed", 0))
+        failed = int(self._lifetime_stats.get("failed", 0))
+        cancelled = int(self._lifetime_stats.get("cancelled", 0))
+        video_count = 0
+        video_bytes = 0
+        for path in self.settings.output_path.glob("*.mp4"):
+            try:
+                resolved = path.resolve()
+                if resolved.is_relative_to(self.settings.output_path.resolve()) and resolved.is_file():
+                    video_count += 1
+                    video_bytes += resolved.stat().st_size
+            except OSError:
+                continue
+        active = next(
+            (job for job in self.jobs.values() if job.status in {JobStatus.RENDERING, JobStatus.ENCODING}),
+            None,
+        )
+        return {
+            "queue_size": self.queue_size,
+            "active_count": self.active_count,
+            "active_status": active.status.value if active else "idle",
+            "active_progress": active.progress if active else 0,
+            "processed_total": completed + failed + cancelled,
+            "completed_total": completed,
+            "failed_total": failed,
+            "cancelled_total": cancelled,
+            "video_count": video_count,
+            "video_bytes": video_bytes,
+        }
+
+    def _load_lifetime_stats(self) -> dict[str, int]:
+        try:
+            payload = json.loads(self.settings.stats_path.read_text(encoding="utf-8"))
+            return {
+                "completed": max(0, int(payload.get("completed", 0))),
+                "failed": max(0, int(payload.get("failed", 0))),
+                "cancelled": max(0, int(payload.get("cancelled", 0))),
+            }
+        except (OSError, ValueError, TypeError, AttributeError):
+            return {"completed": 0, "failed": 0, "cancelled": 0}
+
+    async def _record_terminal(self, status: str) -> None:
+        async with self._stats_lock:
+            self._lifetime_stats[status] = int(self._lifetime_stats.get(status, 0)) + 1
+            await asyncio.to_thread(self._save_lifetime_stats)
+
+    def _save_lifetime_stats(self) -> None:
+        self.settings.stats_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.settings.stats_path.with_suffix(self.settings.stats_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(self._lifetime_stats, sort_keys=True), encoding="utf-8")
+        temporary.replace(self.settings.stats_path)

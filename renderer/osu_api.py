@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -104,6 +106,33 @@ class OsuApiClient:
         if not response.content:
             raise RenderError(ErrorCode.REPLAY_UNAVAILABLE, "Replay is empty", http_status=404)
         return response.content
+
+    async def lookup_beatmap(self, checksum: str) -> ScoreMetadata:
+        checksum = checksum.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", checksum):
+            raise RenderError(ErrorCode.INVALID_REPLAY, "Replay beatmap checksum is invalid")
+        response = await self._get(f"/api/v2/beatmaps/lookup?checksum={quote(checksum)}")
+        if response.status_code == 404:
+            raise RenderError(ErrorCode.BEATMAP_NOT_FOUND, "Beatmap checksum is unknown to osu!", http_status=404)
+        if response.status_code != 200:
+            raise RenderError(ErrorCode.OSU_API_UNAVAILABLE, f"Beatmap lookup returned HTTP {response.status_code}", http_status=503)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RenderError(ErrorCode.OSU_API_UNAVAILABLE, "Beatmap lookup returned invalid JSON", http_status=503) from exc
+        beatmapset = data.get("beatmapset") if isinstance(data.get("beatmapset"), dict) else {}
+        mode = str(data.get("mode") or "osu").lower()
+        if mode == "catch":
+            mode = "fruits"
+        return ScoreMetadata(
+            beatmap_id=_int_or_none(data.get("id")),
+            beatmapset_id=_int_or_none(data.get("beatmapset_id") or beatmapset.get("id")),
+            artist=str(beatmapset.get("artist_unicode") or beatmapset.get("artist")) if beatmapset else None,
+            title=str(beatmapset.get("title_unicode") or beatmapset.get("title")) if beatmapset else None,
+            difficulty=str(data.get("version")) if data.get("version") is not None else None,
+            mapper=str(beatmapset.get("creator")) if beatmapset.get("creator") is not None else None,
+            ruleset=mode,
+        )
 
 
 def _int_or_none(value: Any) -> int | None:

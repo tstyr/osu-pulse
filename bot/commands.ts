@@ -135,4 +135,24 @@ export const commands = [
   new SlashCommandBuilder()
     .setName("render-status")
     .setDescription("ローカルRendererの状態を確認"),
+
+  new SlashCommandBuilder()
+    .setName("server-status")
+    .setDescription("PC・Renderer状況チャンネルを管理")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("同一カテゴリに状況チャンネルを自動作成"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("refresh")
+        .setDescription("すべての状況チャンネルを今すぐ更新"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("remove")
+        .setDescription("自動作成した状況カテゴリとチャンネルを削除"),
+    ),
 ].map((command) => command.toJSON());

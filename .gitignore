@@ -31,6 +31,7 @@
 /renderer/output/
 /renderer/logs/
 /renderer/beatmap-index.json
+/renderer/stats.json
 /renderer/local/
 __pycache__/
 *.py[cod]

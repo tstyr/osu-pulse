@@ -32,6 +32,7 @@ import { registerOsuAccount } from "@/services/osu-sync";
 import { runLocalPomodoro, triggerRemoteAutomation } from "./automation";
 import { handleMusicCommand } from "./music";
 import { handleRenderCommand, handleRenderStatusCommand } from "./render";
+import { handleServerStatusCommand } from "./server-status";
 
 type HandlerContext = {
   client: Client;
@@ -71,6 +72,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction, co
     else if (interaction.commandName === "music") await handleMusicCommand(interaction, context.lavalink);
     else if (interaction.commandName === "render") await handleRenderCommand(interaction);
     else if (interaction.commandName === "render-status") await handleRenderStatusCommand(interaction);
+    else if (interaction.commandName === "server-status") await handleServerStatusCommand(interaction);
   } catch (error) {
     console.error(`[command] /${interaction.commandName} failed:`, error);
     const message = error instanceof Error ? error.message : "予期しないエラーが発生しました。";

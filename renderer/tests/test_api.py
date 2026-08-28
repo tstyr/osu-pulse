@@ -34,6 +34,7 @@ def test_settings(root: Path, *, token: str | None = None) -> Settings:
         keep_failed_temp=False,
         video_encoder="auto",
         danser_settings="default",
+        stats_path=root / "stats.json",
     )
 
 
