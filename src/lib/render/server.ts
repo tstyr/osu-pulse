@@ -241,12 +241,13 @@ export async function claimCloudRenderJob(rendererId: string) {
 
 function validateBlobUrl(value: string) {
   const url = new URL(value);
+  const youtube = url.protocol === "https:" && url.hostname === "youtu.be" && /^\/[A-Za-z0-9_-]{6,32}$/.test(url.pathname);
   if (
-    url.protocol !== "https:" ||
+    !youtube && (url.protocol !== "https:" ||
     !url.hostname.endsWith(".public.blob.vercel-storage.com") ||
-    !/^\/renders\/[0-9a-f-]{36}\.mp4$/.test(url.pathname)
+    !/^\/renders\/[0-9a-f-]{36}\.mp4$/.test(url.pathname))
   ) {
-    throw new RenderApiError("INVALID_VIDEO_URL", "Unexpected Vercel Blob URL.", 400);
+    throw new RenderApiError("INVALID_VIDEO_URL", "Unexpected completed video URL.", 400);
   }
 }
 

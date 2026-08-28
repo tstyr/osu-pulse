@@ -8,7 +8,17 @@ export async function GET(request: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
   const expired = await expiredCloudRenderJobs();
-  const urls = expired.flatMap((job) => job.videoUrl ? [job.videoUrl] : []);
+  const urls = expired.flatMap((job) => {
+    if (!job.videoUrl) return [];
+    try {
+      const url = new URL(job.videoUrl);
+      return url.protocol === "https:" && url.hostname.endsWith(".public.blob.vercel-storage.com")
+        ? [job.videoUrl]
+        : [];
+    } catch {
+      return [];
+    }
+  });
   if (urls.length) await del(urls, { token: process.env.BLOB_READ_WRITE_TOKEN });
   await deleteCloudRenderJobs(expired.map((job) => job.id));
   return Response.json({ ok: true, deletedJobs: expired.length, deletedBlobs: urls.length });

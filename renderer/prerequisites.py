@@ -21,6 +21,7 @@ class DependencyState:
     mania_skin: bool = False
     osu_api: bool = False
     youtube_upload: bool = False
+    youtube_privacy_status: str | None = None
     nvenc: bool = False
     amf: bool = False
     songs_index_ready: bool = False
@@ -51,6 +52,7 @@ class DependencyState:
             "mania_skin": self.mania_skin,
             "osu_api": self.osu_api,
             "youtube_upload": self.youtube_upload,
+            "youtube_privacy_status": self.youtube_privacy_status,
             "nvenc": self.nvenc,
             "amf": self.amf,
             "songs_index_ready": self.songs_index_ready,
@@ -119,6 +121,7 @@ async def inspect_dependencies(settings: Settings) -> DependencyState:
             and settings.youtube_client_id
             and settings.youtube_refresh_token
         ),
+        youtube_privacy_status=settings.youtube_privacy_status,
         nvenc=nvenc_ok,
         amf=amf_ok,
     )

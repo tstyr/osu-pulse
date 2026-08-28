@@ -159,6 +159,9 @@ class Settings:
     youtube_category_id: str = "20"
     youtube_upload_timeout_seconds: int = 7200
     youtube_chunk_bytes: int = 8 * 1024 * 1024
+    youtube_delete_after_upload: bool = False
+    youtube_upload_registry_path: Path = RENDERER_ROOT / "youtube-uploads.json"
+    r2_delete_script: Path = RENDERER_ROOT / "delete_r2_video.mjs"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -221,6 +224,9 @@ class Settings:
             youtube_category_id=_youtube_category_id(),
             youtube_upload_timeout_seconds=_int_env("YOUTUBE_UPLOAD_TIMEOUT_SECONDS", 7200, minimum=60),
             youtube_chunk_bytes=_youtube_chunk_bytes(),
+            youtube_delete_after_upload=_bool_env("YOUTUBE_DELETE_AFTER_UPLOAD", False),
+            youtube_upload_registry_path=_path_env("YOUTUBE_UPLOAD_REGISTRY_PATH", RENDERER_ROOT / "youtube-uploads.json"),
+            r2_delete_script=(RENDERER_ROOT / "delete_r2_video.mjs").resolve(),
         )
 
     def ensure_directories(self) -> None:

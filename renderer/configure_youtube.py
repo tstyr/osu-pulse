@@ -17,7 +17,10 @@ from dotenv import set_key
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+SCOPE = " ".join((
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+))
 RENDERER_ENV = Path(__file__).resolve().parent / ".env"
 
 
@@ -59,8 +62,9 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Authorize osu! Pulse to upload unlisted YouTube videos")
+    parser = argparse.ArgumentParser(description="Authorize osu! Pulse to upload YouTube videos")
     parser.add_argument("client_json", type=Path, help="OAuth Desktop app client JSON downloaded from Google Cloud")
+    parser.add_argument("--privacy", choices=("private", "unlisted", "public"), default="public")
     args = parser.parse_args()
     client_id, client_secret = _client(args.client_json.resolve())
 
@@ -124,8 +128,8 @@ def main() -> int:
     set_key(RENDERER_ENV, "YOUTUBE_CLIENT_ID", client_id)
     set_key(RENDERER_ENV, "YOUTUBE_CLIENT_SECRET", client_secret or "")
     set_key(RENDERER_ENV, "YOUTUBE_REFRESH_TOKEN", refresh_token)
-    set_key(RENDERER_ENV, "YOUTUBE_PRIVACY_STATUS", "unlisted")
-    print("[OK] YouTube auto-upload is configured for unlisted videos.")
+    set_key(RENDERER_ENV, "YOUTUBE_PRIVACY_STATUS", args.privacy)
+    print(f"[OK] YouTube auto-upload is configured for {args.privacy} videos.")
     print("Restart renderer/start_renderer.bat to apply it.")
     return 0
 

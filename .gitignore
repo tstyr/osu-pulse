@@ -33,6 +33,7 @@
 /renderer/logs/
 /renderer/beatmap-index.json
 /renderer/stats.json
+/renderer/youtube-uploads.json
 /renderer/local/
 __pycache__/
 *.py[cod]

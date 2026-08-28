@@ -19,6 +19,7 @@ from .render_options import RenderOptions
 from .replay_parser import mods_from_bits, parse_replay
 from .score_resolver import parse_score_url
 from .youtube_uploader import YouTubeUploader, YouTubeUploadError
+from .youtube_archive import YouTubeArchive
 
 
 LOGGER = logging.getLogger("renderer.jobs")
@@ -42,6 +43,7 @@ class JobManager:
         self.runner = runner
         self.beatmap_downloader = beatmap_downloader
         self.youtube_uploader = youtube_uploader
+        self.youtube_archive = YouTubeArchive(settings)
         self.jobs: dict[str, RenderJob] = {}
         self._render_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_ids: list[str] = []
@@ -257,6 +259,7 @@ class JobManager:
                 replay_path = self._job_dir(job.id) / "replay.osr"
                 output = await self.runner.render(job, replay_path)
                 job.output_path = output
+                job.output_size_bytes = output.stat().st_size
                 job.render_finished_at = utc_now()
                 if self.youtube_uploader and self.youtube_uploader.configured and job.metadata:
                     await self._upload_youtube(job)
@@ -287,7 +290,8 @@ class JobManager:
         assert self.youtube_uploader
         assert job.output_path
         assert job.metadata
-        job.update(JobStatus.ENCODING, 99, "Uploading to YouTube as unlisted")
+        privacy = self.settings.youtube_privacy_status
+        job.update(JobStatus.ENCODING, 99, f"Uploading to YouTube as {privacy}")
 
         def update_progress(percent: int) -> None:
             job.update(JobStatus.ENCODING, 99, f"Uploading to YouTube: {percent}%")
@@ -308,6 +312,16 @@ class JobManager:
             job.youtube_url = result.url
             job.youtube_title = result.title
             job.youtube_privacy_status = result.privacy_status
+            source_size = job.output_size_bytes or job.output_path.stat().st_size
+            try:
+                await self.youtube_archive.record(job.id, result, job.metadata, source_size)
+            except Exception:
+                LOGGER.exception("job=%s YouTube upload succeeded but registry write failed; keeping local/R2 copies", job.id)
+            else:
+                if self.settings.youtube_delete_after_upload:
+                    cleanup_errors = await self.youtube_archive.cleanup(job.id, job.output_path)
+                    if cleanup_errors:
+                        LOGGER.warning("job=%s post-upload cleanup incomplete: %s", job.id, " | ".join(cleanup_errors))
         except YouTubeUploadError as exc:
             job.youtube_error = str(exc)[:500]
             LOGGER.error("job=%s youtube_upload_failed error=%s", job.id, job.youtube_error)

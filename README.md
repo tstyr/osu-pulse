@@ -26,10 +26,10 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/stats` でBot利用統計
 - `/render` でosu!standard / maniaのResult URL、登録アカウントの直近Replay、または`.osr`をMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
-- Renderer完了後、判定・pp・精度・曲名を含むタイトルでYouTubeへ限定公開投稿（OAuth設定時）
+- Renderer完了後、判定・pp・精度・曲名を含むタイトルでYouTubeへ公開投稿（OAuth設定時）
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
-- 状況カテゴリは15秒ごとに再取得。Discordの添付上限を超えた完成動画はCloudflare R2（未設定時はVercel Blob）へアップロードしてダウンロードボタンを表示
-- Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成MP4をVercel Blobで受け取る
+- 状況カテゴリは15秒ごとに再取得。YouTube未設定時のみ完成動画をCloudflare R2（未設定時はVercel Blob）へアップロード
+- Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成動画はYouTubeリンクで受け取る
 
 ## ローカル起動
 
@@ -78,7 +78,7 @@ RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします�
 
 Discordコマンドを追加・変更した後は一度登録し直します。
 
-### YouTube限定公開への自動投稿
+### YouTube公開への自動投稿
 
 YouTube Data API v3を有効にしたGoogle Cloudプロジェクトで、OAuthクライアントを「デスクトップアプリ」として作成し、JSONをダウンロードします。次のコマンドを1回実行するとブラウザでYouTubeチャンネルを選択でき、更新トークンはGit管理外の`renderer/.env`だけへ保存されます。
 
@@ -86,9 +86,9 @@ YouTube Data API v3を有効にしたGoogle Cloudプロジェクトで、OAuth�
 renderer\.venv\Scripts\python.exe -m renderer.configure_youtube C:\path\to\client_secret.json
 ```
 
-認証後に`renderer/start_renderer.bat`を再起動します。以後、レンダー本体の完了後に`判定 | pp | 精度 | Artist - 曲名 [難易度]`形式のタイトルで自動投稿し、登録者への新着通知は送りません。投稿失敗時も完成動画とR2共有は失敗扱いにせず継続します。
+認証後に`renderer/start_renderer.bat`を再起動します。以後、レンダー本体の完了後に`判定 | pp | 精度 | Artist - 曲名 [難易度]`形式のタイトルで公開投稿し、登録者への新着通知は送りません。`YOUTUBE_DELETE_AFTER_UPLOAD=true`では、YouTubeが投稿成功を返した後に同じJob IDのローカルMP4とR2オブジェクトを削除します。成功記録はGit管理外の`renderer/youtube-uploads.json`へ先に保存されます。
 
-`YOUTUBE_PRIVACY_STATUS=unlisted`を要求しますが、2020年7月28日以降に作成された未監査のYouTube APIプロジェクトはGoogle側で非公開に制限されます。限定公開を保証するにはGoogleのAPIコンプライアンス監査が必要です。RendererとDiscordはAPIが実際に返した公開状態を表示します。
+`YOUTUBE_PRIVACY_STATUS=public`を要求しますが、2020年7月28日以降に作成された未監査のYouTube APIプロジェクトはGoogle側で非公開に制限される場合があります。公開を保証するにはGoogleのAPIコンプライアンス監査が必要です。RendererとDiscordはAPIが実際に返した公開状態を表示します。
 
 ```bash
 npm run bot:register

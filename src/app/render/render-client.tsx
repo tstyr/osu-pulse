@@ -61,6 +61,15 @@ function formatBytes(value: number | null) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function isYouTubeUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "youtu.be";
+  } catch {
+    return false;
+  }
+}
+
 function metadataText(metadata: Record<string, unknown> | null) {
   if (!metadata) return null;
   const artist = typeof metadata.artist === "string" ? metadata.artist : null;
@@ -367,7 +376,7 @@ export function RenderClient() {
                 {metadataText(job.metadata) ? <p className="mt-3 rounded-lg bg-black/20 p-2.5 text-[10px] leading-5 text-zinc-400">{metadataText(job.metadata)}</p> : null}
                 {job.status === "completed" && job.videoUrl ? (
                   <a href={job.videoUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-300 text-xs font-semibold text-emerald-950 hover:bg-emerald-200">
-                    <CheckCircle2 className="size-4" /> MP4 を開く {formatBytes(job.videoSize)}
+                    <CheckCircle2 className="size-4" /> {isYouTubeUrl(job.videoUrl) ? "YouTubeで見る" : `MP4 を開く ${formatBytes(job.videoSize)}`}
                   </a>
                 ) : !TERMINAL.has(job.status) ? (
                   <button type="button" onClick={() => void cancelJob()} disabled={busy} className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-rose-300/15 bg-rose-300/[0.05] text-xs text-rose-200 hover:bg-rose-300/[0.09]">

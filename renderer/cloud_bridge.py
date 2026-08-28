@@ -55,12 +55,15 @@ class CloudRenderBridge:
         return bool(
             self.settings.cloud_url
             and self.settings.cloud_bridge_token
-            and self.video_sharer.configured
+            and (
+                self.video_sharer.configured
+                or (self.manager.youtube_uploader and self.manager.youtube_uploader.configured)
+            )
         )
 
     async def start(self) -> None:
         if not self.enabled:
-            LOGGER.warning("Cloud bridge disabled: configure bridge credentials and R2 or Vercel Blob storage")
+            LOGGER.warning("Cloud bridge disabled: configure bridge credentials and YouTube or object storage")
             return
         self._client = httpx.AsyncClient(
             base_url=self.settings.cloud_url,
@@ -181,6 +184,17 @@ class CloudRenderBridge:
             await asyncio.sleep(2.5)
 
         if local_job.status == JobStatus.COMPLETED and local_job.output_path:
+            if local_job.youtube_url:
+                await self._patch(cloud_id, {
+                    "localJobId": local_job.id,
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "YouTubeへの公開投稿が完了しました",
+                    "metadata": self._job_metadata(local_job),
+                    "videoUrl": local_job.youtube_url,
+                    "videoSize": local_job.output_size_bytes or 1,
+                })
+                return
             await self._patch(cloud_id, {
                 "localJobId": local_job.id,
                 "status": "uploading",

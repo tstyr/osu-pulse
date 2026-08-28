@@ -126,6 +126,7 @@ class RenderJob:
     replay_info: ReplayInfo | None = None
     beatmap_path: Path | None = None
     output_path: Path | None = None
+    output_size_bytes: int | None = None
     error_code: str | None = None
     error: str | None = None
     youtube_video_id: str | None = None
@@ -173,6 +174,7 @@ class RenderJob:
             "youtube_title": self.youtube_title,
             "youtube_privacy_status": self.youtube_privacy_status,
             "youtube_error": self.youtube_error,
+            "output_size_bytes": self.output_size_bytes,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "render_duration_seconds": render_duration,

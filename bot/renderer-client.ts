@@ -13,6 +13,7 @@ export type RendererHealth = {
   mania_skin: boolean;
   osu_api: boolean;
   youtube_upload: boolean;
+  youtube_privacy_status?: "private" | "unlisted" | "public";
   nvenc: boolean;
   amf: boolean;
   songs_index_ready: boolean;
@@ -102,7 +103,7 @@ export type SharedVideo = {
   size: number;
   original_size?: number;
   compressed?: boolean;
-  provider: "r2" | "vercel-blob";
+  provider: "r2" | "vercel-blob" | "youtube";
 };
 
 export class RendererClientError extends Error {

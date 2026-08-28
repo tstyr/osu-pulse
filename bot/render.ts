@@ -213,15 +213,18 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 }
 
-function downloadComponents(url: string, youtubeUrl: string | null) {
+function downloadComponents(url: string, youtubeUrl: string | null, provider?: "r2" | "vercel-blob" | "youtube") {
   if (url.length > 512) return [];
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (provider !== "youtube") {
+    row.addComponents(
       new ButtonBuilder()
         .setLabel("動画をダウンロード")
         .setEmoji("📥")
         .setStyle(ButtonStyle.Link)
         .setURL(url),
     );
+  }
   if (youtubeUrl && youtubeUrl.length <= 512 && /^https:\/\/youtu\.be\/[A-Za-z0-9_-]+$/.test(youtubeUrl)) {
     row.addComponents(
       new ButtonBuilder()
@@ -387,12 +390,12 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       }
       if (job.status === "completed") {
         await progressMessage.edit({
-          content: "🗜️ 動画を圧縮して外部ストレージへアップロードしています...",
+          content: job.youtube_url ? "▶️ YouTube投稿を確認しています..." : "🗜️ 動画を圧縮して外部ストレージへアップロードしています...",
           embeds: [renderEmbed(job)],
         });
         const shared = await client.shareVideo(job.job_id);
-        const provider = shared.provider === "r2" ? "Cloudflare R2" : "Vercel Blob";
-        const components = downloadComponents(shared.url, job.youtube_url);
+        const provider = shared.provider === "r2" ? "Cloudflare R2" : shared.provider === "vercel-blob" ? "Vercel Blob" : "YouTube";
+        const components = downloadComponents(shared.url, job.youtube_url, shared.provider);
         const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
         const saved = shared.original_size && shared.original_size > shared.size
           ? ` · 圧縮前 ${fileSizeLabel(shared.original_size)}（${Math.round((1 - shared.size / shared.original_size) * 100)}%削減）`
@@ -402,8 +405,11 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
           : job.youtube_error
             ? "\n⚠️ YouTube自動投稿に失敗しました。Rendererログを確認してください。"
             : "";
+        const completed = shared.provider === "youtube"
+          ? `✅ YouTubeへ${job.youtube_privacy_status === "public" ? "公開" : job.youtube_privacy_status === "unlisted" ? "限定公開" : "非公開"}で投稿し、ローカル/R2の動画を削除しました。`
+          : `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}`;
         await progressMessage.edit({
-          content: `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}`,
+          content: completed,
           embeds: [renderEmbed(job)],
           components,
         });
@@ -436,7 +442,7 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
         { name: "FFmpeg", value: health.ffmpeg ? "OK" : "NOT FOUND", inline: true },
         { name: "Songs", value: health.osu_songs ? `${health.songs_index_count.toLocaleString()} maps` : "NOT FOUND", inline: true },
         { name: "osu! API", value: health.osu_api ? "OK" : "MISSING CREDENTIALS", inline: true },
-        { name: "YouTube", value: health.youtube_upload ? "AUTO / UNLISTED" : "NOT CONFIGURED", inline: true },
+        { name: "YouTube", value: health.youtube_upload ? `AUTO / ${(health.youtube_privacy_status ?? "unlisted").toUpperCase()}` : "NOT CONFIGURED", inline: true },
       );
     await interaction.editReply({ embeds: [embed] });
   } catch {

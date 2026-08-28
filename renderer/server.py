@@ -199,6 +199,15 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             return await sharer.share(job_id)
         if job.status.value != "completed" or not job.output_path:
             raise RenderError(ErrorCode.VIDEO_NOT_READY, "Video is not ready", http_status=409)
+        if job.youtube_url:
+            size = job.output_size_bytes or 1
+            return {
+                "url": job.youtube_url,
+                "size": size,
+                "original_size": size,
+                "compressed": False,
+                "provider": "youtube",
+            }
         return await sharer.share(job_id, job.options)
 
     @app.delete("/jobs/{job_id}", dependencies=[Depends(authorize)])
@@ -282,14 +291,18 @@ def print_startup_summary(settings: Settings, dependencies: DependencyState) -> 
     print(f"std Skin     : {settings.standard_skin if dependencies.standard_skin else 'NOT FOUND'}")
     print(f"mania Skin   : {settings.mania_skin if dependencies.mania_skin else 'NOT FOUND'}")
     print(f"osu! API     : {'OK' if dependencies.osu_api else 'MISSING CREDENTIALS'}")
-    print(f"YouTube      : {'READY (unlisted)' if dependencies.youtube_upload else 'NOT CONFIGURED'}")
+    print(f"YouTube      : {f'READY ({settings.youtube_privacy_status})' if dependencies.youtube_upload else 'NOT CONFIGURED'}")
     print(f"GPU Encoder  : {gpu_encoder}")
     print(f"Render Slots : {settings.max_concurrent_renders}\n")
     storage_ready = bool(
         settings.blob_token
         or all(os.getenv(name) for name in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"))
     )
-    cloud_ready = bool(settings.cloud_url and settings.cloud_bridge_token and storage_ready)
+    cloud_ready = bool(
+        settings.cloud_url
+        and settings.cloud_bridge_token
+        and (storage_ready or dependencies.youtube_upload)
+    )
     print(f"Vercel Bridge: {'READY' if cloud_ready else 'NOT CONFIGURED'}")
     if settings.cloud_url:
         print(f"Cloud URL    : {settings.cloud_url}")
