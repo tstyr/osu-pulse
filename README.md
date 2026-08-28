@@ -70,7 +70,7 @@ RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします�
 5. Web連携ではVercel Blobを接続し、`RENDER_CLOUD_URL`、`RENDER_BRIDGE_TOKEN`、`BLOB_READ_WRITE_TOKEN`をRenderer側に設定します。このリポジトリをVercel CLIでリンク済みなら`renderer/.venv/Scripts/python.exe -m renderer.configure_cloud_bridge`で安全に同期できます。
 6. `renderer/start_renderer.bat`をダブルクリックします。初回だけPython仮想環境と小さなAPI依存を自動セットアップします。
 
-既定値は2560x1600・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVENCを検査し、SongsのBeatmap ID/MD5インデックスを作成します。danserは内部でFFmpegを利用し、NVENCの実エンコード確認に失敗した場合はlibx264へフォールバックします。
+既定値は2560x1600・60fps・Original speed・Motion Blur OFFです。起動時にdanser、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。danserは内部でFFmpegを利用し、利用可能なGPUエンコーダを自動選択します。GPUエンコードに失敗した場合はlibx264へフォールバックします。
 
 Discordコマンドを追加・変更した後は一度登録し直します。
 

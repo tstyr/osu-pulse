@@ -18,7 +18,11 @@ from .prerequisites import DependencyState, executable_exists
 
 LOGGER = logging.getLogger("renderer.danser")
 PROGRESS_PATTERN = re.compile(r"(?<![0-9])(100|[0-9]{1,2})(?:\.[0-9]+)?\s*%")
-NVENC_FAILURE_PATTERN = re.compile(r"nvenc|no capable devices|cannot load.*cuda|encoder.*not found", re.IGNORECASE)
+HARDWARE_ENCODERS = {"h264_nvenc", "h264_amf"}
+HARDWARE_ENCODER_FAILURE_PATTERN = re.compile(
+    r"nvenc|amf|no capable devices|cannot load.*(?:cuda|amf)|encoder.*not found|error while opening encoder",
+    re.IGNORECASE,
+)
 
 
 def progress_from_line(line: str) -> int | None:
@@ -47,10 +51,10 @@ class DanserRunner:
             return self._verify_output(job)
 
         combined = "\n".join(output_lines[-100:])
-        if encoder == "h264_nvenc" and self.settings.video_encoder == "auto" and NVENC_FAILURE_PATTERN.search(combined):
-            LOGGER.warning("job=%s NVENC failed; retrying with libx264", job.id)
+        if encoder in HARDWARE_ENCODERS and self.settings.video_encoder == "auto" and HARDWARE_ENCODER_FAILURE_PATTERN.search(combined):
+            LOGGER.warning("job=%s hardware encoder %s failed; retrying with libx264", job.id, encoder)
             self._remove_partial_output(job.id)
-            job.update(JobStatus.RENDERING, 1, "NVENC unavailable; retrying with CPU encoder")
+            job.update(JobStatus.RENDERING, 1, f"{encoder} unavailable; retrying with CPU encoder")
             return_code, output_lines = await self._run_once(job, replay_path, "libx264")
             if return_code == 0:
                 return self._verify_output(job)
@@ -60,9 +64,15 @@ class DanserRunner:
 
     def _encoder(self) -> str:
         if self.settings.video_encoder == "auto":
-            return "h264_nvenc" if self.dependencies.nvenc else "libx264"
+            if self.dependencies.nvenc:
+                return "h264_nvenc"
+            if self.dependencies.amf:
+                return "h264_amf"
+            return "libx264"
         if self.settings.video_encoder == "h264_nvenc" and not self.dependencies.nvenc:
             raise RenderError(ErrorCode.FFMPEG_NOT_FOUND, "h264_nvenc is configured but unavailable", http_status=503)
+        if self.settings.video_encoder == "h264_amf" and not self.dependencies.amf:
+            raise RenderError(ErrorCode.FFMPEG_NOT_FOUND, "h264_amf is configured but unavailable", http_status=503)
         return self.settings.video_encoder
 
     def _command(self, job: RenderJob, replay_path: Path, encoder: str) -> list[str]:

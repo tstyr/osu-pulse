@@ -108,8 +108,8 @@ class Settings:
         _load_environment()
         songs_default = Path(os.getenv("LOCALAPPDATA", PROJECT_ROOT)) / "osu!" / "Songs"
         encoder = os.getenv("VIDEO_ENCODER", "auto").strip().lower()
-        if encoder not in {"auto", "h264_nvenc", "libx264"}:
-            raise ValueError("VIDEO_ENCODER must be auto, h264_nvenc, or libx264")
+        if encoder not in {"auto", "h264_nvenc", "h264_amf", "libx264"}:
+            raise ValueError("VIDEO_ENCODER must be auto, h264_nvenc, h264_amf, or libx264")
         return cls(
             # Deliberately ignore HOST so the service can never be exposed by env typo.
             host="127.0.0.1",

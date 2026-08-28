@@ -232,6 +232,7 @@ def _validate_job_id(job_id: str) -> None:
 
 def print_startup_summary(settings: Settings, dependencies: DependencyState) -> None:
     value = lambda ok: "OK" if ok else "NOT FOUND"
+    gpu_encoder = "NVENC" if dependencies.nvenc else "AMD AMF" if dependencies.amf else "CPU (libx264)"
     print("\n==============================================")
     print("          osu! Local Rendering Server")
     print("==============================================\n")
@@ -241,7 +242,7 @@ def print_startup_summary(settings: Settings, dependencies: DependencyState) -> 
     print(f"FFmpeg       : {value(dependencies.ffmpeg)}")
     print(f"osu! Songs   : {value(dependencies.osu_songs)}")
     print(f"osu! API     : {'OK' if dependencies.osu_api else 'MISSING CREDENTIALS'}")
-    print(f"GPU Encoder  : {'NVENC' if dependencies.nvenc else 'CPU (libx264)'}")
+    print(f"GPU Encoder  : {gpu_encoder}")
     print(f"Render Slots : {settings.max_concurrent_renders}\n")
     cloud_ready = bool(settings.cloud_url and settings.cloud_bridge_token and settings.blob_token)
     print(f"Vercel Bridge: {'READY' if cloud_ready else 'NOT CONFIGURED'}")
