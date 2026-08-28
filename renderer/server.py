@@ -27,6 +27,7 @@ from .osu_api import OsuApiClient
 from .prerequisites import DependencyState, inspect_dependencies
 from .render_options import RenderOptions
 from .system_metrics import SystemMetricsCollector
+from .video_sharer import VideoSharer
 
 
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -64,6 +65,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         osu_api = OsuApiClient(settings.osu_client_id, settings.osu_client_secret)
         beatmap_downloader = BeatmapDownloader(settings) if settings.auto_download_beatmaps else None
         metrics = SystemMetricsCollector(settings.output_path)
+        video_sharer = VideoSharer(settings)
         manager = JobManager(
             settings,
             osu_api,
@@ -81,6 +83,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         app.state.jobs = manager
         app.state.cloud_bridge = cloud_bridge
         app.state.metrics = metrics
+        app.state.video_sharer = video_sharer
         print_startup_summary(settings, dependencies)
         try:
             yield
@@ -178,6 +181,12 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         if not path.is_relative_to(settings.output_path.resolve()) or not path.is_file():
             raise RenderError(ErrorCode.VIDEO_NOT_READY, "Video is no longer available", http_status=410)
         return FileResponse(path, media_type="video/mp4", filename=f"osu-render-{job.id[:8]}.mp4")
+
+    @app.post("/jobs/{job_id}/share", dependencies=[Depends(authorize)])
+    async def share_video(job_id: str, request: Request) -> dict[str, object]:
+        _validate_job_id(job_id)
+        sharer: VideoSharer = request.app.state.video_sharer
+        return await sharer.share(job_id)
 
     @app.delete("/jobs/{job_id}", dependencies=[Depends(authorize)])
     async def cancel_job(job_id: str, request: Request) -> dict[str, Any]:

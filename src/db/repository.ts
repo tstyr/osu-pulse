@@ -191,6 +191,7 @@ export async function configureServerStatus(input: {
   guildId: string;
   categoryId: string;
   channelIds: ServerStatusChannelIds;
+  liveMessageId?: string | null;
 }) {
   const [settings] = await getDb()
     .insert(guildSettings)
@@ -199,6 +200,7 @@ export async function configureServerStatus(input: {
       statusEnabled: true,
       statusCategoryId: input.categoryId,
       statusChannelIds: input.channelIds,
+      statusLiveMessageId: input.liveMessageId ?? null,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -207,6 +209,7 @@ export async function configureServerStatus(input: {
         statusEnabled: true,
         statusCategoryId: input.categoryId,
         statusChannelIds: input.channelIds,
+        statusLiveMessageId: input.liveMessageId ?? null,
         updatedAt: new Date(),
       },
     })
@@ -221,11 +224,19 @@ export async function disableServerStatus(guildId: string) {
       statusEnabled: false,
       statusCategoryId: null,
       statusChannelIds: null,
+      statusLiveMessageId: null,
       updatedAt: new Date(),
     })
     .where(eq(guildSettings.guildId, guildId))
     .returning();
   return settings;
+}
+
+export async function setServerStatusLiveMessage(guildId: string, messageId: string) {
+  await getDb()
+    .update(guildSettings)
+    .set({ statusLiveMessageId: messageId, updatedAt: new Date() })
+    .where(eq(guildSettings.guildId, guildId));
 }
 
 export async function listServerStatusSettings() {
@@ -234,6 +245,7 @@ export async function listServerStatusSettings() {
       guildId: guildSettings.guildId,
       statusCategoryId: guildSettings.statusCategoryId,
       statusChannelIds: guildSettings.statusChannelIds,
+      statusLiveMessageId: guildSettings.statusLiveMessageId,
     })
     .from(guildSettings)
     .where(eq(guildSettings.statusEnabled, true));

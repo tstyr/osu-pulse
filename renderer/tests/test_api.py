@@ -54,3 +54,10 @@ class ApiTests(unittest.TestCase):
             with TestClient(create_app(test_settings(Path(temporary), token="test-token"))) as client:
                 self.assertEqual(client.get("/health").status_code, 401)
                 self.assertEqual(client.get("/health", headers={"Authorization": "Bearer test-token"}).status_code, 200)
+
+    def test_share_rejects_missing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with TestClient(create_app(test_settings(Path(temporary)))) as client:
+                response = client.post(f"/jobs/{'a' * 32}/share")
+                self.assertEqual(response.status_code, 410)
+                self.assertEqual(response.json()["error_code"], "VIDEO_NOT_READY")

@@ -106,6 +106,8 @@ class Settings:
     beatmap_download_no_video: bool = True
     max_beatmapset_bytes: int = 256 * 1024 * 1024
     stats_path: Path = RENDERER_ROOT / "stats.json"
+    video_upload_script: Path = RENDERER_ROOT / "upload_video.mjs"
+    video_share_timeout_seconds: int = 7200
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -148,6 +150,8 @@ class Settings:
             beatmap_download_no_video=_bool_env("BEATMAP_DOWNLOAD_NO_VIDEO", True),
             max_beatmapset_bytes=_int_env("MAX_BEATMAPSET_BYTES", 256 * 1024 * 1024),
             stats_path=_path_env("RENDER_STATS_PATH", RENDERER_ROOT / "stats.json"),
+            video_upload_script=(RENDERER_ROOT / "upload_video.mjs").resolve(),
+            video_share_timeout_seconds=_int_env("VIDEO_SHARE_TIMEOUT_SECONDS", 7200),
         )
 
     def ensure_directories(self) -> None:

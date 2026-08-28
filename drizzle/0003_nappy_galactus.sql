@@ -1,0 +1,1 @@
+ALTER TABLE "guild_settings" ADD COLUMN "status_live_message_id" text;

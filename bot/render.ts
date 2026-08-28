@@ -1,5 +1,8 @@
 import {
+  ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChatInputCommandInteraction,
   EmbedBuilder,
   MessageFlags,
@@ -47,6 +50,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   RENDER_CANCELLED: "レンダリングはキャンセルされました。",
   TOO_MANY_JOBS: "⚠️ 実行中または待機中のJobが上限に達しています。完了後に再試行してください。",
   DUPLICATE_JOB: "⚠️ 同じReplayと設定のJobがすでに進行中です。",
+  VIDEO_UPLOAD_FAILED: "❌ 完成動画を外部ストレージへアップロードできませんでした。R2またはVercel Blob設定を確認してください。",
 };
 
 function numberEnv(name: string, fallback: number) {
@@ -57,6 +61,26 @@ function numberEnv(name: string, fallback: number) {
 function progressBar(progress: number) {
   const filled = Math.max(0, Math.min(20, Math.round(progress / 5)));
   return `${"█".repeat(filled)}${"░".repeat(20 - filled)}`;
+}
+
+function fileSizeLabel(bytes: number) {
+  const gibibytes = bytes / (1024 ** 3);
+  return gibibytes >= 1
+    ? `${gibibytes.toFixed(2)} GiB`
+    : `${(bytes / (1024 ** 2)).toFixed(1)} MiB`;
+}
+
+function downloadComponents(url: string) {
+  if (url.length > 512) return [];
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setLabel("動画をダウンロード")
+        .setEmoji("📥")
+        .setStyle(ButtonStyle.Link)
+        .setURL(url),
+    ),
+  ];
 }
 
 function renderEmbed(job: RenderJobStatus) {
@@ -176,7 +200,19 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
           await progressMessage.edit({ content: null, embeds: [renderEmbed(job)], files: [attachment] });
         } catch (error) {
           if (error instanceof RendererClientError && error.code === "VIDEO_TOO_LARGE") {
-            await progressMessage.edit({ content: "⚠️ レンダリングは完了しましたが、動画サイズがDiscordのアップロード上限を超えています。", embeds: [renderEmbed(job)] });
+            await progressMessage.edit({
+              content: "☁️ Discordの上限を超えたため、外部ストレージへアップロードしています...",
+              embeds: [renderEmbed(job)],
+            });
+            const shared = await client.shareVideo(job.job_id);
+            const provider = shared.provider === "r2" ? "Cloudflare R2" : "Vercel Blob";
+            const components = downloadComponents(shared.url);
+            const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
+            await progressMessage.edit({
+              content: `✅ 動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}）。${inlineLink}`,
+              embeds: [renderEmbed(job)],
+              components,
+            });
             return;
           }
           throw error;

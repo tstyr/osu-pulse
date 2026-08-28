@@ -86,6 +86,12 @@ export type RenderOptions = {
   motionBlur: boolean;
 };
 
+export type SharedVideo = {
+  url: string;
+  size: number;
+  provider: "r2" | "vercel-blob";
+};
+
 export class RendererClientError extends Error {
   constructor(
     public readonly code: string,
@@ -191,6 +197,14 @@ export class RendererClient {
       chunks.push(Buffer.from(value));
     }
     return Buffer.concat(chunks, total);
+  }
+
+  async shareVideo(jobId: string): Promise<SharedVideo> {
+    return this.requestJson(
+      `/jobs/${encodeURIComponent(jobId)}/share`,
+      { method: "POST" },
+      numberEnv("RENDER_SHARE_TIMEOUT_MS", 7_200_000),
+    );
   }
 
   private async requestJson<T>(path: string, init: RequestInit, timeoutMs = numberEnv("RENDER_REQUEST_TIMEOUT_MS", 10_000)): Promise<T> {

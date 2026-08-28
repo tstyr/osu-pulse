@@ -89,7 +89,8 @@ export type ServerStatusChannelIds = Partial<
     | "network"
     | "render"
     | "videos"
-    | "jobs",
+    | "jobs"
+    | "live",
     string
   >
 >;
@@ -103,6 +104,7 @@ export const guildSettings = pgTable("guild_settings", {
   statusEnabled: boolean("status_enabled").notNull().default(false),
   statusCategoryId: text("status_category_id"),
   statusChannelIds: jsonb("status_channel_ids").$type<ServerStatusChannelIds>(),
+  statusLiveMessageId: text("status_live_message_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

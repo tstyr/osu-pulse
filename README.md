@@ -27,6 +27,7 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/render` でosu!standardのResult URLまたは`.osr`をローカルdanserでMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
+- 状況カテゴリは15秒ごとに再取得。Discordの添付上限を超えた完成動画はCloudflare R2（未設定時はVercel Blob）へアップロードしてダウンロードボタンを表示
 - Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成MP4をVercel Blobで受け取る
 
 ## ローカル起動
@@ -92,6 +93,12 @@ npm run bot:start
 ```
 
 Rendererを止めるときは起動したBATウィンドウを閉じます。再起動後はBotを再起動せずに利用できます。出力は`renderer/output`に保存され、既定で24時間後に削除されます。Jobの一時ファイルは成功・失敗・キャンセル後に削除されます（`KEEP_FAILED_TEMP=true`を除く）。
+
+Discordのアップロード上限を超える動画は外部ストレージへ送ります。提示されたR2バケットURLは次のコマンドでエンドポイントとバケット名に分離して設定できます。その後、Cloudflare R2で対象バケットだけにObject Read & Write権限を持つS3 API tokenを作成し、`R2_ACCESS_KEY_ID`と`R2_SECRET_ACCESS_KEY`を`.env.local`と`renderer/.env`へ保存してください。公開URLを設定しない場合は7日間有効な署名付きダウンロードURLを発行します。資格情報がない間は既存のVercel Blobを自動利用します。
+
+```bash
+renderer/.venv/Scripts/python.exe -m renderer.configure_r2 "https://ACCOUNT_ID.r2.cloudflarestorage.com/BUCKET"
+```
 
 Webでは`https://osu-pulse.vercel.app/render`を開き、`outputs/render-access-key.txt`のキーを入力します。キーはブラウザの`sessionStorage`だけに保存されます。`.osr`はVercel Functionsのペイロード制限を考慮して3 MBまで、完成MP4は東京リージョンの公開Vercel Blobへ直接アップロードされます。保存期限は24時間で、日次Cronの次回実行時に削除されるため実際の保持は最大約48時間です。
 
