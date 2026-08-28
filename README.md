@@ -30,6 +30,14 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 
 ## ローカル起動
 
+Windowsでは、リポジトリ直下の`start_osu_pulse.bat`をダブルクリックすると、RendererとDiscord Botを別ウィンドウでまとめて起動できます。片方だけ停止・再起動することもできます。起動前チェックだけ行う場合は次を実行します。
+
+```bat
+start_osu_pulse.bat --check
+```
+
+Botだけ起動する場合は`bot/start_bot.bat`、Rendererだけ起動する場合は`renderer/start_renderer.bat`を使います。初回セットアップやWeb開発サーバーの起動は以下のコマンドを使います。
+
 ```bash
 npm install
 copy .env.example .env.local
