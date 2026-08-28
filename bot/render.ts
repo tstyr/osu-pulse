@@ -1,6 +1,6 @@
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
+  type AutocompleteInteraction,
   ButtonBuilder,
   ButtonStyle,
   ChatInputCommandInteraction,
@@ -10,6 +10,12 @@ import {
 } from "discord.js";
 
 import {
+  getAccountByDiscord,
+  getRecentPlays,
+  getScoreEventForAccount,
+} from "@/db/repository";
+
+import {
   downloadDiscordReplay,
   RendererClient,
   RendererClientError,
@@ -17,6 +23,7 @@ import {
   type RenderJobStatus,
   type RenderOptions,
 } from "./renderer-client";
+import { renderAccountChoiceName } from "./render-choice";
 
 const STATUS_LABELS: Record<RenderJobStatus["status"], string> = {
   created: "受付済み",
@@ -68,6 +75,35 @@ function fileSizeLabel(bytes: number) {
   return gibibytes >= 1
     ? `${gibibytes.toFixed(2)} GiB`
     : `${(bytes / (1024 ** 2)).toFixed(1)} MiB`;
+}
+
+export async function handleRenderAutocomplete(interaction: AutocompleteInteraction) {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "account") {
+    await interaction.respond([]);
+    return;
+  }
+
+  try {
+    const account = await getAccountByDiscord(interaction.user.id);
+    if (!account) {
+      await interaction.respond([]);
+      return;
+    }
+    const query = String(focused.value).trim().toLocaleLowerCase("ja");
+    const plays = await getRecentPlays(account.id, "osu", 25);
+    const choices = plays
+      .map((play) => ({
+        name: renderAccountChoiceName(play),
+        value: play.osuScoreId,
+      }))
+      .filter((choice) => !query || choice.name.toLocaleLowerCase("ja").includes(query))
+      .slice(0, 25);
+    await interaction.respond(choices);
+  } catch (error) {
+    console.error("[render] autocomplete failed:", error);
+    await interaction.respond([]).catch(() => undefined);
+  }
 }
 
 function downloadComponents(url: string) {
@@ -127,19 +163,39 @@ function errorMessage(error: unknown) {
 }
 
 export async function handleRenderCommand(interaction: ChatInputCommandInteraction) {
-  const url = interaction.options.getString("url")?.trim() || null;
+  let url = interaction.options.getString("url")?.trim() || null;
   const replay = interaction.options.getAttachment("replay");
-  if (url && replay) {
-    await interaction.reply({ content: "❌ リザルトURLとReplayファイルはどちらか一方だけ指定してください。", flags: MessageFlags.Ephemeral });
+  const accountScoreId = interaction.options.getString("account")?.trim() || null;
+  const sourceCount = Number(Boolean(url)) + Number(Boolean(replay)) + Number(Boolean(accountScoreId));
+  if (sourceCount > 1) {
+    await interaction.reply({ content: "❌ アカウント履歴、リザルトURL、Replayファイルはどれか1つだけ指定してください。", flags: MessageFlags.Ephemeral });
     return;
   }
-  if (!url && !replay) {
-    await interaction.reply({ content: "❌ osu!のリザルトURLまたは.osrファイルを指定してください。", flags: MessageFlags.Ephemeral });
+  if (sourceCount === 0) {
+    await interaction.reply({ content: "❌ `account`、osu!のリザルトURL、または.osrファイルを指定してください。", flags: MessageFlags.Ephemeral });
     return;
   }
   if (replay && !replay.name.toLowerCase().endsWith(".osr")) {
     await interaction.reply({ content: "❌ `.osr` ファイルを添付してください。", flags: MessageFlags.Ephemeral });
     return;
+  }
+
+  if (accountScoreId) {
+    if (!/^[1-9][0-9]{0,18}$/.test(accountScoreId)) {
+      await interaction.reply({ content: "❌ 選択したプレイが正しくありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const account = await getAccountByDiscord(interaction.user.id);
+    if (!account) {
+      await interaction.reply({ content: "❌ 先に `/osu link` でアカウントを登録してください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const play = await getScoreEventForAccount(account.id, accountScoreId);
+    if (!play || play.mode !== "osu") {
+      await interaction.reply({ content: "❌ このプレイは直近のosu!standard履歴にありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    url = `https://osu.ppy.sh/scores/osu/${play.osuScoreId}`;
   }
 
   await interaction.deferReply();
@@ -194,29 +250,22 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
         return;
       }
       if (job.status === "completed") {
-        try {
-          const video = await client.downloadVideo(job.job_id, interaction.attachmentSizeLimit);
-          const attachment = new AttachmentBuilder(video, { name: `osu-render-${job.job_id.slice(0, 8)}.mp4` });
-          await progressMessage.edit({ content: null, embeds: [renderEmbed(job)], files: [attachment] });
-        } catch (error) {
-          if (error instanceof RendererClientError && error.code === "VIDEO_TOO_LARGE") {
-            await progressMessage.edit({
-              content: "☁️ Discordの上限を超えたため、外部ストレージへアップロードしています...",
-              embeds: [renderEmbed(job)],
-            });
-            const shared = await client.shareVideo(job.job_id);
-            const provider = shared.provider === "r2" ? "Cloudflare R2" : "Vercel Blob";
-            const components = downloadComponents(shared.url);
-            const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
-            await progressMessage.edit({
-              content: `✅ 動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}）。${inlineLink}`,
-              embeds: [renderEmbed(job)],
-              components,
-            });
-            return;
-          }
-          throw error;
-        }
+        await progressMessage.edit({
+          content: "🗜️ 動画を圧縮して外部ストレージへアップロードしています...",
+          embeds: [renderEmbed(job)],
+        });
+        const shared = await client.shareVideo(job.job_id);
+        const provider = shared.provider === "r2" ? "Cloudflare R2" : "Vercel Blob";
+        const components = downloadComponents(shared.url);
+        const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
+        const saved = shared.original_size && shared.original_size > shared.size
+          ? ` · 圧縮前 ${fileSizeLabel(shared.original_size)}（${Math.round((1 - shared.size / shared.original_size) * 100)}%削減）`
+          : "";
+        await progressMessage.edit({
+          content: `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}`,
+          embeds: [renderEmbed(job)],
+          components,
+        });
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, interval));

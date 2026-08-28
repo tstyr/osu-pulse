@@ -295,6 +295,23 @@ export async function getRecentPlays(
     .limit(limit);
 }
 
+export async function getScoreEventForAccount(
+  accountId: string,
+  osuScoreId: string,
+) {
+  const [score] = await getDb()
+    .select()
+    .from(scoreEvents)
+    .where(
+      and(
+        eq(scoreEvents.accountId, accountId),
+        eq(scoreEvents.osuScoreId, osuScoreId),
+      ),
+    )
+    .limit(1);
+  return score;
+}
+
 export async function upsertDailySnapshot(
   snapshot: typeof dailySnapshots.$inferInsert,
 ) {

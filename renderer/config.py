@@ -31,6 +31,13 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
     return value
 
 
+def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    value = _int_env(name, default, minimum=minimum)
+    if value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
+    return value
+
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -108,6 +115,10 @@ class Settings:
     stats_path: Path = RENDERER_ROOT / "stats.json"
     video_upload_script: Path = RENDERER_ROOT / "upload_video.mjs"
     video_share_timeout_seconds: int = 7200
+    video_compress_enabled: bool = True
+    video_compress_quality: int = 24
+    video_compress_audio_kbps: int = 160
+    video_compress_timeout_seconds: int = 7200
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -152,6 +163,10 @@ class Settings:
             stats_path=_path_env("RENDER_STATS_PATH", RENDERER_ROOT / "stats.json"),
             video_upload_script=(RENDERER_ROOT / "upload_video.mjs").resolve(),
             video_share_timeout_seconds=_int_env("VIDEO_SHARE_TIMEOUT_SECONDS", 7200),
+            video_compress_enabled=_bool_env("VIDEO_COMPRESS", True),
+            video_compress_quality=_bounded_int_env("VIDEO_COMPRESS_QUALITY", 24, minimum=18, maximum=32),
+            video_compress_audio_kbps=_bounded_int_env("VIDEO_COMPRESS_AUDIO_KBPS", 160, minimum=64, maximum=320),
+            video_compress_timeout_seconds=_int_env("VIDEO_COMPRESS_TIMEOUT_SECONDS", 7200, minimum=60),
         )
 
     def ensure_directories(self) -> None:

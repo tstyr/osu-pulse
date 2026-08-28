@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
@@ -65,7 +66,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         osu_api = OsuApiClient(settings.osu_client_id, settings.osu_client_secret)
         beatmap_downloader = BeatmapDownloader(settings) if settings.auto_download_beatmaps else None
         metrics = SystemMetricsCollector(settings.output_path)
-        video_sharer = VideoSharer(settings)
+        video_sharer = VideoSharer(settings, dependencies)
         manager = JobManager(
             settings,
             osu_api,
@@ -74,7 +75,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             beatmap_downloader,
         )
         await manager.start()
-        cloud_bridge = CloudRenderBridge(settings, manager, dependencies)
+        cloud_bridge = CloudRenderBridge(settings, manager, dependencies, video_sharer)
         await cloud_bridge.start()
         app.state.settings = settings
         app.state.dependencies = dependencies
@@ -186,7 +187,16 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
     async def share_video(job_id: str, request: Request) -> dict[str, object]:
         _validate_job_id(job_id)
         sharer: VideoSharer = request.app.state.video_sharer
-        return await sharer.share(job_id)
+        manager: JobManager = request.app.state.jobs
+        try:
+            job = manager.get(job_id)
+        except RenderError as exc:
+            if exc.code != ErrorCode.JOB_NOT_FOUND:
+                raise
+            return await sharer.share(job_id)
+        if job.status.value != "completed" or not job.output_path:
+            raise RenderError(ErrorCode.VIDEO_NOT_READY, "Video is not ready", http_status=409)
+        return await sharer.share(job_id, job.options)
 
     @app.delete("/jobs/{job_id}", dependencies=[Depends(authorize)])
     async def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
@@ -268,7 +278,11 @@ def print_startup_summary(settings: Settings, dependencies: DependencyState) -> 
     print(f"osu! API     : {'OK' if dependencies.osu_api else 'MISSING CREDENTIALS'}")
     print(f"GPU Encoder  : {gpu_encoder}")
     print(f"Render Slots : {settings.max_concurrent_renders}\n")
-    cloud_ready = bool(settings.cloud_url and settings.cloud_bridge_token and settings.blob_token)
+    storage_ready = bool(
+        settings.blob_token
+        or all(os.getenv(name) for name in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"))
+    )
+    cloud_ready = bool(settings.cloud_url and settings.cloud_bridge_token and storage_ready)
     print(f"Vercel Bridge: {'READY' if cloud_ready else 'NOT CONFIGURED'}")
     if settings.cloud_url:
         print(f"Cloud URL    : {settings.cloud_url}")

@@ -13,6 +13,7 @@ import {
   isMusicButton,
 } from "./music";
 import { runOsuPoller } from "./poller";
+import { handleRenderAutocomplete } from "./render";
 import { startServerStatusUpdater } from "./server-status";
 
 const token = process.env.DISCORD_TOKEN;
@@ -46,6 +47,10 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName === "render") await handleRenderAutocomplete(interaction);
+      return;
+    }
     if (interaction.isButton() && isMusicButton(interaction)) {
       await handleMusicButton(interaction, lavalink);
       return;

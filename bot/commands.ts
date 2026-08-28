@@ -108,6 +108,10 @@ export const commands = [
   new SlashCommandBuilder()
     .setName("render")
     .setDescription("osu!standard ReplayをローカルPCで動画化")
+    .addStringOption((option) => option
+      .setName("account")
+      .setDescription("/osu link済みアカウントの直近プレイ")
+      .setAutocomplete(true))
     .addStringOption((option) => option.setName("url").setDescription("osu! Result URL"))
     .addAttachmentOption((option) => option.setName("replay").setDescription(".osr Replayファイル"))
     .addStringOption((option) => option.setName("resolution").setDescription("動画解像度（既定: 2560x1600）").addChoices(

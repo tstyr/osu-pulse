@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import time
 from pathlib import Path
@@ -16,6 +15,7 @@ from .jobs import JobManager
 from .models import JobStatus, RenderJob, TERMINAL_STATUSES
 from .prerequisites import DependencyState
 from .render_options import RenderOptions
+from .video_sharer import VideoSharer
 
 
 LOGGER = logging.getLogger("renderer.cloud")
@@ -34,10 +34,17 @@ STATUS_MAP = {
 
 
 class CloudRenderBridge:
-    def __init__(self, settings: Settings, manager: JobManager, dependencies: DependencyState) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        manager: JobManager,
+        dependencies: DependencyState,
+        video_sharer: VideoSharer,
+    ) -> None:
         self.settings = settings
         self.manager = manager
         self.dependencies = dependencies
+        self.video_sharer = video_sharer
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
         self._active_cloud_job_id: str | None = None
@@ -48,14 +55,12 @@ class CloudRenderBridge:
         return bool(
             self.settings.cloud_url
             and self.settings.cloud_bridge_token
-            and self.settings.blob_token
-            and self.settings.node_path
-            and self.settings.blob_upload_script.is_file()
+            and self.video_sharer.configured
         )
 
     async def start(self) -> None:
         if not self.enabled:
-            LOGGER.warning("Cloud bridge disabled: configure RENDER_CLOUD_URL, RENDER_BRIDGE_TOKEN, and BLOB_READ_WRITE_TOKEN")
+            LOGGER.warning("Cloud bridge disabled: configure bridge credentials and R2 or Vercel Blob storage")
             return
         self._client = httpx.AsyncClient(
             base_url=self.settings.cloud_url,
@@ -180,7 +185,7 @@ class CloudRenderBridge:
                 "localJobId": local_job.id,
                 "status": "uploading",
                 "progress": 99,
-                "message": "Vercel Blob へ動画をアップロード中",
+                "message": "動画を圧縮して外部ストレージへアップロード中",
                 "metadata": local_job.metadata.public_dict() if local_job.metadata else None,
             })
             uploaded = await self._upload_with_lease(cloud_id, local_job)
@@ -219,7 +224,7 @@ class CloudRenderBridge:
         return body if isinstance(body, dict) else {}
 
     async def _upload_with_lease(self, cloud_id: str, job: RenderJob) -> dict[str, Any]:
-        upload = asyncio.create_task(self._upload(job.output_path, cloud_id), name=f"blob-upload-{cloud_id}")
+        upload = asyncio.create_task(self._upload(job.output_path), name=f"video-upload-{cloud_id}")
         try:
             while not upload.done():
                 try:
@@ -229,7 +234,7 @@ class CloudRenderBridge:
                         "localJobId": job.id,
                         "status": "uploading",
                         "progress": 99,
-                        "message": "Vercel Blob へ動画をアップロード中",
+                        "message": "動画を圧縮して外部ストレージへアップロード中",
                         "metadata": job.metadata.public_dict() if job.metadata else None,
                     })
                     await self._heartbeat_request()
@@ -239,22 +244,11 @@ class CloudRenderBridge:
                 upload.cancel()
                 await asyncio.gather(upload, return_exceptions=True)
 
-    async def _upload(self, output: Path, cloud_id: str) -> dict[str, Any]:
-        assert self.settings.node_path
-        process = await asyncio.create_subprocess_exec(
-            str(self.settings.node_path),
-            str(self.settings.blob_upload_script),
-            str(output),
-            cloud_id,
-            cwd=str(self.settings.project_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            detail = stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"Vercel Blob upload failed: {detail[-300:]}")
-        result = json.loads(stdout.decode("utf-8"))
+    async def _upload(self, output: Path) -> dict[str, Any]:
+        local_job = self._active_local_job
+        if not local_job or local_job.output_path != output:
+            raise RuntimeError("Local render job is unavailable for upload")
+        result = await self.video_sharer.share(local_job.id, local_job.options)
         if not isinstance(result.get("url"), str) or not isinstance(result.get("size"), int):
-            raise RuntimeError("Vercel Blob uploader returned an invalid response")
+            raise RuntimeError("Video uploader returned an invalid response")
         return result

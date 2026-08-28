@@ -89,6 +89,8 @@ export type RenderOptions = {
 export type SharedVideo = {
   url: string;
   size: number;
+  original_size?: number;
+  compressed?: boolean;
   provider: "r2" | "vercel-blob";
 };
 

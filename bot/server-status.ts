@@ -1,6 +1,5 @@
 import {
   ChannelType,
-  EmbedBuilder,
   MessageFlags,
   PermissionFlagsBits,
   type CategoryChannel,
@@ -14,17 +13,14 @@ import {
   disableServerStatus,
   getGuildSettings,
   listServerStatusSettings,
-  setServerStatusLiveMessage,
 } from "@/db/repository";
 import type { ServerStatusChannelIds } from "@/db/schema";
 
 import { RendererClient, type RendererHealth } from "./renderer-client";
 
 const CATEGORY_NAME = "📊・OSU PULSE STATUS";
-const MIN_UPDATE_INTERVAL_MS = 15_000;
-const DEFAULT_UPDATE_INTERVAL_MS = 15_000;
-const MIN_CHANNEL_NAME_INTERVAL_MS = 300_000;
-const DEFAULT_CHANNEL_NAME_INTERVAL_MS = 300_000;
+const MIN_CHANNEL_NAME_INTERVAL_MS = 15_000;
+const DEFAULT_CHANNEL_NAME_INTERVAL_MS = 15_000;
 const LIVE_CHANNEL_NAME = "📡・live-status";
 
 const STATUS_KEYS = [
@@ -53,25 +49,23 @@ const PLACEHOLDER_NAMES: Record<StatusKey, string> = {
   jobs: "✅・jobs-checking",
 };
 
-function updateInterval() {
-  const configured = Number.parseInt(process.env.STATUS_UPDATE_INTERVAL_MS ?? "", 10);
-  return Number.isFinite(configured)
-    ? Math.max(MIN_UPDATE_INTERVAL_MS, configured)
-    : DEFAULT_UPDATE_INTERVAL_MS;
-}
-
-function updateIntervalLabel() {
-  const milliseconds = updateInterval();
-  return milliseconds < 60_000
-    ? `${Math.round(milliseconds / 1_000)}秒`
-    : `${Math.round(milliseconds / 60_000)}分`;
-}
-
 function channelNameUpdateInterval() {
-  const configured = Number.parseInt(process.env.STATUS_CHANNEL_NAME_INTERVAL_MS ?? "", 10);
+  const configured = Number.parseInt(
+    process.env.STATUS_CHANNEL_NAME_INTERVAL_MS
+      ?? process.env.STATUS_UPDATE_INTERVAL_MS
+      ?? "",
+    10,
+  );
   return Number.isFinite(configured)
     ? Math.max(MIN_CHANNEL_NAME_INTERVAL_MS, configured)
     : DEFAULT_CHANNEL_NAME_INTERVAL_MS;
+}
+
+function channelNameUpdateIntervalLabel() {
+  const milliseconds = channelNameUpdateInterval();
+  return milliseconds < 60_000
+    ? `${Math.round(milliseconds / 1_000)}秒`
+    : `${Math.round(milliseconds / 60_000)}分`;
 }
 
 function formatBytes(bytes: number | undefined) {
@@ -126,39 +120,6 @@ function channelNames(health: RendererHealth | null): Record<StatusKey, string> 
   };
 }
 
-function liveStatusEmbed(health: RendererHealth | null) {
-  const embed = new EmbedBuilder()
-    .setTitle("osu! Pulse Live Server Status")
-    .setFooter({ text: `${updateIntervalLabel()}ごとに自動更新 · チャンネル名は5分ごと` })
-    .setTimestamp();
-  const system = health?.system;
-  const stats = health?.render_stats;
-  if (!health || !system || !stats) {
-    return embed
-      .setColor(0xff5577)
-      .setDescription("🔴 Renderer Offline")
-      .addFields({ name: "接続", value: "ローカルRendererへ接続できません。" });
-  }
-  const encoder = health.nvenc ? "NVENC" : health.amf ? "AMD AMF" : "CPU (libx264)";
-  const renderState = stats.active_count > 0
-    ? `${stats.active_status} ${Math.round(stats.active_progress)}% · Queue ${stats.queue_size}`
-    : `Idle · Queue ${stats.queue_size}`;
-  return embed
-    .setColor(health.status === "online" ? 0x55dd99 : 0xffaa55)
-    .setDescription(`${health.status === "online" ? "🟢" : "🟡"} **Renderer ${health.status.toUpperCase()}**`)
-    .addFields(
-      { name: "🧠 CPU", value: safePercent(system.cpu_percent), inline: true },
-      { name: "🎮 GPU", value: `${safePercent(system.gpu_percent)} · ${encoder}`, inline: true },
-      { name: "💾 RAM", value: `${formatBytes(system.memory_used_bytes)} / ${formatBytes(system.memory_total_bytes)} (${safePercent(system.memory_percent)})`, inline: true },
-      { name: "💿 Disk", value: `${formatBytes(system.disk_used_bytes)} / ${formatBytes(system.disk_total_bytes)} (${safePercent(system.disk_percent)})`, inline: true },
-      { name: "🌐 Network", value: `RX ${formatBytes(system.network_received_bytes)} · TX ${formatBytes(system.network_sent_bytes)}`, inline: true },
-      { name: "🎬 Render", value: renderState, inline: true },
-      { name: "📦 Videos", value: `${stats.video_count}本 · ${formatBytes(stats.video_bytes)}`, inline: true },
-      { name: "✅ Jobs", value: `Total ${stats.processed_total} · OK ${stats.completed_total} · NG ${stats.failed_total} · Cancel ${stats.cancelled_total}`, inline: true },
-      { name: "🗺️ Songs", value: `${health.songs_index_count.toLocaleString()} beatmaps`, inline: true },
-    );
-}
-
 async function fetchHealth() {
   try {
     return await new RendererClient().health();
@@ -187,11 +148,6 @@ async function statusCategory(guild: Guild, categoryId?: string | null) {
 function statusVoiceChannel(guild: Guild, id: string | undefined) {
   const channel = id ? guild.channels.cache.get(id) : null;
   return channel?.type === ChannelType.GuildVoice ? channel : null;
-}
-
-function statusLiveChannel(guild: Guild, id: string | undefined) {
-  const channel = id ? guild.channels.cache.get(id) : null;
-  return channel?.type === ChannelType.GuildText ? channel : null;
 }
 
 async function createStatusChannels(
@@ -229,60 +185,25 @@ async function createStatusChannels(
     }
     ids[key] = channel.id;
   }
-  let liveChannel = statusLiveChannel(guild, storedIds?.live);
-  if (!liveChannel) {
-    const candidate = guild.channels.cache.find(
-      (item) => item.type === ChannelType.GuildText && item.parentId === category.id && item.name === LIVE_CHANNEL_NAME,
-    );
-    liveChannel = candidate?.type === ChannelType.GuildText ? candidate : null;
-  }
-  if (!liveChannel) {
-    const botMember = guild.members.me ?? await guild.members.fetchMe();
-    liveChannel = await guild.channels.create({
-      name: LIVE_CHANNEL_NAME,
-      type: ChannelType.GuildText,
-      parent: category.id,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.SendMessages],
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-        },
-        {
-          id: botMember.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.EmbedLinks,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        },
-      ],
-      reason: "osu! Pulse 15-second live status",
-    });
-  }
-  ids.live = liveChannel.id;
   return ids;
 }
 
-async function refreshLiveStatus(
+async function removeLegacyLiveChannel(
   guild: Guild,
-  channelIds: ServerStatusChannelIds,
-  messageId: string | null | undefined,
-  health: RendererHealth | null,
+  channelIds: ServerStatusChannelIds | null | undefined,
 ) {
+  if (!channelIds) return {} as ServerStatusChannelIds;
   await guild.channels.fetch();
-  const channel = statusLiveChannel(guild, channelIds.live);
-  if (!channel) return null;
-  const existing = messageId
-    ? await channel.messages.fetch(messageId).catch(() => null)
-    : null;
-  if (existing) {
-    await existing.edit({ embeds: [liveStatusEmbed(health)] });
-    return existing.id;
+  const legacy = channelIds.live ? guild.channels.cache.get(channelIds.live) : null;
+  if (
+    legacy?.type === ChannelType.GuildText
+    && legacy.name === LIVE_CHANNEL_NAME
+  ) {
+    await legacy.delete("osu! Pulse now reports status through channel names only").catch(() => undefined);
   }
-  const message = await channel.send({ embeds: [liveStatusEmbed(health)] });
-  return message.id;
+  const voiceIds = { ...channelIds };
+  delete voiceIds.live;
+  return voiceIds;
 }
 
 export async function refreshGuildStatus(
@@ -314,13 +235,13 @@ async function setup(interaction: ChatInputCommandInteraction, guild: Guild) {
   }
   const existing = await getGuildSettings(guild.id);
   const category = await statusCategory(guild, existing?.statusCategoryId);
-  const channelIds = await createStatusChannels(guild, category, existing?.statusChannelIds);
+  const storedIds = await removeLegacyLiveChannel(guild, existing?.statusChannelIds);
+  const channelIds = await createStatusChannels(guild, category, storedIds);
   const health = await fetchHealth();
   await refreshGuildStatus(guild, channelIds, health);
-  const liveMessageId = await refreshLiveStatus(guild, channelIds, existing?.statusLiveMessageId, health);
-  await configureServerStatus({ guildId: guild.id, categoryId: category.id, channelIds, liveMessageId });
+  await configureServerStatus({ guildId: guild.id, categoryId: category.id, channelIds, liveMessageId: null });
   await interaction.editReply(
-    `✅ <#${category.id}> に9個の状況チャンネルと <#${channelIds.live}> を作成しました。ライブ表示は${updateIntervalLabel()}ごと、チャンネル名は5分ごとに更新します。`,
+    `✅ <#${category.id}> に9個の状況チャンネルを作成しました。チャンネル名を${channelNameUpdateIntervalLabel()}ごとに更新します。`,
   );
 }
 
@@ -332,12 +253,24 @@ async function refresh(interaction: ChatInputCommandInteraction, guild: Guild) {
     return;
   }
   const health = await fetchHealth();
-  const updated = await refreshGuildStatus(guild, settings.statusChannelIds, health);
-  const liveMessageId = await refreshLiveStatus(guild, settings.statusChannelIds, settings.statusLiveMessageId, health);
-  if (liveMessageId && liveMessageId !== settings.statusLiveMessageId) {
-    await setServerStatusLiveMessage(guild.id, liveMessageId);
+  const category = await statusCategory(guild, settings.statusCategoryId);
+  const storedIds = await removeLegacyLiveChannel(guild, settings.statusChannelIds);
+  const channelIds = await createStatusChannels(guild, category, storedIds);
+  const updated = await refreshGuildStatus(guild, channelIds, health);
+  if (
+    settings.statusCategoryId !== category.id
+    || settings.statusChannelIds.live
+    || settings.statusLiveMessageId
+    || JSON.stringify(channelIds) !== JSON.stringify(settings.statusChannelIds)
+  ) {
+    await configureServerStatus({
+      guildId: guild.id,
+      categoryId: category.id,
+      channelIds,
+      liveMessageId: null,
+    });
   }
-  await interaction.editReply(`✅ ライブ表示を更新し、${updated}個のチャンネル名を更新しました。`);
+  await interaction.editReply(`✅ ${updated}個の状況チャンネル名を更新しました。`);
 }
 
 async function remove(interaction: ChatInputCommandInteraction, guild: Guild) {
@@ -379,45 +312,7 @@ export async function handleServerStatusCommand(
 }
 
 export function startServerStatusUpdater(client: Client) {
-  let liveRunning = false;
   let namesRunning = false;
-  const runLive = async () => {
-    if (liveRunning) return;
-    liveRunning = true;
-    try {
-      const settings = await listServerStatusSettings();
-      if (settings.length === 0) return;
-      const health = await fetchHealth();
-      for (const item of settings) {
-        const guild = client.guilds.cache.get(item.guildId);
-        if (!guild || !item.statusChannelIds) continue;
-        let channelIds = item.statusChannelIds;
-        if (!channelIds.live) {
-          const category = await statusCategory(guild, item.statusCategoryId);
-          channelIds = await createStatusChannels(guild, category, channelIds);
-        }
-        const liveMessageId = await refreshLiveStatus(
-          guild,
-          channelIds,
-          item.statusLiveMessageId,
-          health,
-        );
-        if (!item.statusChannelIds.live || (liveMessageId && liveMessageId !== item.statusLiveMessageId)) {
-          await configureServerStatus({
-            guildId: guild.id,
-            categoryId: categoryIdFor(item.statusCategoryId, channelIds, guild),
-            channelIds,
-            liveMessageId,
-          });
-        }
-      }
-    } catch (error) {
-      console.error("[status] live update failed:", error);
-    } finally {
-      liveRunning = false;
-    }
-  };
-
   const runNames = async () => {
     if (namesRunning) return;
     namesRunning = true;
@@ -428,7 +323,21 @@ export function startServerStatusUpdater(client: Client) {
       for (const item of settings) {
         const guild = client.guilds.cache.get(item.guildId);
         if (!guild || !item.statusChannelIds) continue;
-        await refreshGuildStatus(guild, item.statusChannelIds, health);
+        const category = await statusCategory(guild, item.statusCategoryId);
+        const storedIds = await removeLegacyLiveChannel(guild, item.statusChannelIds);
+        const channelIds = await createStatusChannels(guild, category, storedIds);
+        await refreshGuildStatus(guild, channelIds, health);
+        const changed = item.statusCategoryId !== category.id
+          || item.statusLiveMessageId !== null
+          || JSON.stringify(channelIds) !== JSON.stringify(item.statusChannelIds);
+        if (changed) {
+          await configureServerStatus({
+            guildId: guild.id,
+            categoryId: category.id,
+            channelIds,
+            liveMessageId: null,
+          });
+        }
       }
     } catch (error) {
       console.error("[status] channel-name update failed:", error);
@@ -437,22 +346,8 @@ export function startServerStatusUpdater(client: Client) {
     }
   };
 
-  void runLive();
-  const liveTimer = setInterval(() => void runLive(), updateInterval());
+  void runNames();
   const namesTimer = setInterval(() => void runNames(), channelNameUpdateInterval());
-  liveTimer.unref();
   namesTimer.unref();
-  return () => {
-    clearInterval(liveTimer);
-    clearInterval(namesTimer);
-  };
-}
-
-function categoryIdFor(
-  storedCategoryId: string | null,
-  channelIds: ServerStatusChannelIds,
-  guild: Guild,
-) {
-  const liveChannel = statusLiveChannel(guild, channelIds.live);
-  return liveChannel?.parentId ?? storedCategoryId ?? "";
+  return () => clearInterval(namesTimer);
 }
