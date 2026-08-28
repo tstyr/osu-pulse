@@ -15,5 +15,12 @@ const route = guildId
   ? Routes.applicationGuildCommands(clientId, guildId)
   : Routes.applicationCommands(clientId);
 
-await rest.put(route, { body: commands });
-console.log(`Registered ${commands.length} commands ${guildId ? `in guild ${guildId}` : "globally"}.`);
+async function main() {
+  await rest.put(route, { body: commands });
+  console.log(`Registered ${commands.length} commands ${guildId ? `in guild ${guildId}` : "globally"}.`);
+}
+
+void main().catch((error) => {
+  console.error("Command registration failed:", error);
+  process.exitCode = 1;
+});
