@@ -58,7 +58,7 @@ export const accounts = pgTable(
   "accounts",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    discordUserId: text("discord_user_id").notNull().unique(),
+    discordUserId: text("discord_user_id").notNull(),
     osuUserId: bigint("osu_user_id", { mode: "number" }).notNull().unique(),
     username: text("username").notNull(),
     countryCode: text("country_code"),

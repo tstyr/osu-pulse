@@ -23,4 +23,15 @@ describe("render account choices", () => {
     });
     expect(name.length).toBeLessThanOrEqual(100);
   });
+
+  it("shows the linked username when multiple accounts are combined", () => {
+    expect(renderAccountChoiceName({
+      pp: null,
+      rank: "A",
+      username: "second_account",
+      artist: "Artist",
+      title: "Song",
+      difficulty: "Hard",
+    })).toBe("—pp ・ A ・ second_account ・ Artist - Song [Hard]");
+  });
 });

@@ -56,6 +56,7 @@ export type OsuBeatmapset = {
 
 export type OsuScore = {
   id: number | string;
+  has_replay?: boolean;
   accuracy: number;
   pp: number | null;
   rank: string;

@@ -7,11 +7,13 @@ const RANK_LABELS: Record<string, string> = {
 export function renderAccountChoiceName(play: {
   pp: number | null;
   rank: string;
+  username?: string;
   artist: string;
   title: string;
   difficulty: string;
 }) {
-  const pp = `${(play.pp ?? 0).toFixed(1)}pp`;
+  const pp = play.pp == null ? "—pp" : `${play.pp.toFixed(1)}pp`;
   const rank = RANK_LABELS[play.rank] ?? play.rank;
-  return `${pp} ・ ${rank} ・ ${play.artist} - ${play.title} [${play.difficulty}]`.slice(0, 100);
+  const account = play.username ? ` ・ ${play.username}` : "";
+  return `${pp} ・ ${rank}${account} ・ ${play.artist} - ${play.title} [${play.difficulty}]`.slice(0, 100);
 }

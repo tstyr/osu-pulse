@@ -60,9 +60,8 @@ export async function linkAccount(input: {
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: accounts.discordUserId,
+      target: accounts.osuUserId,
       set: {
-        osuUserId: input.user.id,
         username: input.user.username,
         avatarUrl: input.user.avatar_url,
         countryCode: input.user.country_code,
@@ -73,6 +72,9 @@ export async function linkAccount(input: {
     .returning();
 
   if (!account) throw new Error("アカウント登録に失敗しました。");
+  if (account.discordUserId !== input.discordUserId) {
+    throw new Error("このosu!アカウントは別のDiscordユーザーに登録済みです。");
+  }
 
   if (input.guildId) {
     await ensureGuild(input.guildId);
@@ -101,10 +103,31 @@ export async function updateAccountIdentity(
     .where(eq(accounts.id, accountId));
 }
 
-export async function getAccountByDiscord(discordUserId: string) {
-  return getDb().query.accounts.findFirst({
+export async function getAccountsByDiscord(discordUserId: string) {
+  return getDb().query.accounts.findMany({
     where: eq(accounts.discordUserId, discordUserId),
+    orderBy: [asc(accounts.createdAt), asc(accounts.id)],
   });
+}
+
+function matchesAccountSelector(
+  account: typeof accounts.$inferSelect,
+  selector: string,
+) {
+  const normalized = selector.trim().toLocaleLowerCase("en-US");
+  return (
+    String(account.osuUserId) === normalized ||
+    account.username.toLocaleLowerCase("en-US") === normalized
+  );
+}
+
+export async function getAccountByDiscord(
+  discordUserId: string,
+  selector?: string | null,
+) {
+  const linked = await getAccountsByDiscord(discordUserId);
+  if (!selector?.trim()) return linked[0];
+  return linked.find((account) => matchesAccountSelector(account, selector));
 }
 
 export async function getAccountByOsuId(osuUserId: number) {
@@ -123,21 +146,64 @@ export async function listAccounts() {
   return getDb().select().from(accounts).orderBy(asc(accounts.createdAt));
 }
 
-export async function unlinkAccount(discordUserId: string) {
+export async function unlinkAccount(
+  discordUserId: string,
+  selector?: string | null,
+) {
+  const linked = await getAccountsByDiscord(discordUserId);
+  if (linked.length === 0) return undefined;
+
+  const selected = selector?.trim()
+    ? linked.find((account) => matchesAccountSelector(account, selector))
+    : linked.length === 1
+      ? linked[0]
+      : undefined;
+
+  if (!selected) {
+    if (!selector?.trim() && linked.length > 1) {
+      throw new Error(
+        "複数のosu!アカウントが登録されています。`account` に解除するusernameまたはuser IDを指定してください。",
+      );
+    }
+    throw new Error("指定したosu!アカウントは登録されていません。");
+  }
+
   const [deleted] = await getDb()
     .delete(accounts)
-    .where(eq(accounts.discordUserId, discordUserId))
-    .returning({ id: accounts.id });
-  return Boolean(deleted);
+    .where(
+      and(
+        eq(accounts.discordUserId, discordUserId),
+        eq(accounts.id, selected.id),
+      ),
+    )
+    .returning();
+  return deleted;
 }
 
-export async function setDailyDm(discordUserId: string, enabled: boolean) {
-  const [updated] = await getDb()
+export async function setDailyDm(
+  discordUserId: string,
+  enabled: boolean,
+  selector?: string | null,
+) {
+  const selected = selector?.trim()
+    ? await getAccountByDiscord(discordUserId, selector)
+    : undefined;
+  if (selector?.trim() && !selected) {
+    throw new Error("指定したosu!アカウントは登録されていません。");
+  }
+
+  return getDb()
     .update(accounts)
     .set({ dailyDmEnabled: enabled, updatedAt: new Date() })
-    .where(eq(accounts.discordUserId, discordUserId))
+    .where(
+      selected
+        ? and(
+            eq(accounts.discordUserId, discordUserId),
+            eq(accounts.id, selected.id),
+          )
+        : eq(accounts.discordUserId, discordUserId),
+    )
     .returning();
-  return updated;
 }
 
 export async function attachAccountToGuild(accountId: string, guildId: string) {
@@ -293,23 +359,6 @@ export async function getRecentPlays(
     .where(and(eq(scoreEvents.accountId, accountId), eq(scoreEvents.mode, mode)))
     .orderBy(desc(scoreEvents.endedAt))
     .limit(limit);
-}
-
-export async function getScoreEventForAccount(
-  accountId: string,
-  osuScoreId: string,
-) {
-  const [score] = await getDb()
-    .select()
-    .from(scoreEvents)
-    .where(
-      and(
-        eq(scoreEvents.accountId, accountId),
-        eq(scoreEvents.osuScoreId, osuScoreId),
-      ),
-    )
-    .limit(1);
-  return score;
 }
 
 export async function upsertDailySnapshot(

@@ -29,6 +29,13 @@
       "when": 1787902227602,
       "tag": "0003_nappy_galactus",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787913867558,
+      "tag": "0004_lush_smasher",
+      "breakpoints": true
     }
   ]
 }

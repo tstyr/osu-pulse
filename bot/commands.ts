@@ -14,7 +14,7 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName("link")
-        .setDescription("自分のosu!アカウントを初回登録")
+        .setDescription("自分のosu!アカウントを追加登録")
         .addStringOption((option) => option.setName("username").setDescription("osu! username または user ID").setRequired(true))
         .addStringOption((option) => option.setName("mode").setDescription("メインモード").addChoices(...modeChoices)),
     )
@@ -23,6 +23,7 @@ export const commands = [
         .setName("profile")
         .setDescription("登録済みプロフィールを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
+        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
@@ -30,6 +31,7 @@ export const commands = [
         .setName("recent")
         .setDescription("最新リザルトを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
+        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
@@ -37,15 +39,27 @@ export const commands = [
         .setName("growth")
         .setDescription("成長グラフを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
+        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
       subcommand
         .setName("daily")
         .setDescription("毎日の成長DMを設定")
-        .addBooleanOption((option) => option.setName("enabled").setDescription("DMを有効にする").setRequired(true)),
+        .addBooleanOption((option) => option.setName("enabled").setDescription("DMを有効にする").setRequired(true))
+        .addStringOption((option) => option.setName("account").setDescription("対象のosu! username / user ID（省略時は全登録）").setAutocomplete(true)),
     )
-    .addSubcommand((subcommand) => subcommand.setName("unlink").setDescription("登録を解除して追跡データを削除")),
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("accounts")
+        .setDescription("登録済みのosu!アカウント一覧を表示"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("unlink")
+        .setDescription("指定した登録と追跡データを削除")
+        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（複数登録時は必須）").setAutocomplete(true)),
+    ),
 
   new SlashCommandBuilder()
     .setName("setup")
@@ -63,6 +77,7 @@ export const commands = [
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("自分とBot全体の統計を表示")
+    .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
     .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
 
   new SlashCommandBuilder()

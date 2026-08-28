@@ -10,10 +10,10 @@ import {
 } from "discord.js";
 
 import {
-  getAccountByDiscord,
-  getRecentPlays,
-  getScoreEventForAccount,
+  getAccountsByDiscord,
 } from "@/db/repository";
+import { getRecentScores } from "@/lib/osu/client";
+import type { OsuScore } from "@/lib/osu/types";
 
 import {
   downloadDiscordReplay,
@@ -24,6 +24,105 @@ import {
   type RenderOptions,
 } from "./renderer-client";
 import { renderAccountChoiceName } from "./render-choice";
+
+type RenderableRecentPlay = {
+  scoreId: string;
+  pp: number | null;
+  rank: string;
+  username?: string;
+  artist: string;
+  title: string;
+  difficulty: string;
+  endedAt: number;
+};
+
+type RenderableRecentResult = {
+  accountCount: number;
+  plays: RenderableRecentPlay[];
+};
+
+const RECENT_PLAY_CACHE_MS = 30_000;
+const recentPlayCache = new Map<
+  string,
+  { expiresAt: number; result: RenderableRecentResult }
+>();
+const recentPlayRequests = new Map<string, Promise<RenderableRecentResult>>();
+
+function scoreEndedAt(score: OsuScore) {
+  const parsed = Date.parse(score.ended_at ?? score.created_at ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function fetchRenderableRecentPlays(
+  discordUserId: string,
+): Promise<RenderableRecentResult> {
+  const accounts = await getAccountsByDiscord(discordUserId);
+  if (accounts.length === 0) return { accountCount: 0, plays: [] };
+
+  const results = await Promise.allSettled(
+    accounts.map(async (account) => ({
+      account,
+      scores: await getRecentScores(account.osuUserId, "osu", 100),
+    })),
+  );
+  const successful = results.filter(
+    (result): result is PromiseFulfilledResult<{
+      account: (typeof accounts)[number];
+      scores: OsuScore[];
+    }> => result.status === "fulfilled",
+  );
+  if (successful.length === 0) {
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    throw failed?.reason ?? new Error("osu! APIから直近プレイを取得できませんでした。");
+  }
+
+  const includeUsername = accounts.length > 1;
+  const unique = new Map<string, RenderableRecentPlay>();
+  for (const { value } of successful) {
+    for (const score of value.scores) {
+      if (score.has_replay !== true) continue;
+      const scoreId = String(score.id);
+      if (!/^[1-9][0-9]{0,18}$/.test(scoreId) || unique.has(scoreId)) continue;
+      unique.set(scoreId, {
+        scoreId,
+        pp: score.pp,
+        rank: score.rank,
+        username: includeUsername ? value.account.username : undefined,
+        artist: score.beatmapset?.artist ?? "Unknown artist",
+        title: score.beatmapset?.title ?? `Beatmap #${score.beatmap.id}`,
+        difficulty: score.beatmap.version,
+        endedAt: scoreEndedAt(score),
+      });
+    }
+  }
+
+  return {
+    accountCount: accounts.length,
+    plays: [...unique.values()].sort((left, right) => right.endedAt - left.endedAt),
+  };
+}
+
+async function getRenderableRecentPlays(discordUserId: string) {
+  const cached = recentPlayCache.get(discordUserId);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  const existingRequest = recentPlayRequests.get(discordUserId);
+  if (existingRequest) return existingRequest;
+
+  const request = fetchRenderableRecentPlays(discordUserId)
+    .then((result) => {
+      recentPlayCache.set(discordUserId, {
+        expiresAt: Date.now() + RECENT_PLAY_CACHE_MS,
+        result,
+      });
+      return result;
+    })
+    .finally(() => recentPlayRequests.delete(discordUserId));
+  recentPlayRequests.set(discordUserId, request);
+  return request;
+}
 
 const STATUS_LABELS: Record<RenderJobStatus["status"], string> = {
   created: "受付済み",
@@ -85,17 +184,16 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 
   try {
-    const account = await getAccountByDiscord(interaction.user.id);
-    if (!account) {
+    const recent = await getRenderableRecentPlays(interaction.user.id);
+    if (recent.accountCount === 0) {
       await interaction.respond([]);
       return;
     }
     const query = String(focused.value).trim().toLocaleLowerCase("ja");
-    const plays = await getRecentPlays(account.id, "osu", 25);
-    const choices = plays
+    const choices = recent.plays
       .map((play) => ({
         name: renderAccountChoiceName(play),
-        value: play.osuScoreId,
+        value: play.scoreId,
       }))
       .filter((choice) => !query || choice.name.toLocaleLowerCase("ja").includes(query))
       .slice(0, 25);
@@ -185,17 +283,24 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       await interaction.reply({ content: "❌ 選択したプレイが正しくありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
       return;
     }
-    const account = await getAccountByDiscord(interaction.user.id);
-    if (!account) {
+    let recent: RenderableRecentResult;
+    try {
+      recent = await getRenderableRecentPlays(interaction.user.id);
+    } catch (error) {
+      console.error("[render] recent score lookup failed:", error);
+      await interaction.reply({ content: ERROR_MESSAGES.OSU_API_UNAVAILABLE, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (recent.accountCount === 0) {
       await interaction.reply({ content: "❌ 先に `/osu link` でアカウントを登録してください。", flags: MessageFlags.Ephemeral });
       return;
     }
-    const play = await getScoreEventForAccount(account.id, accountScoreId);
-    if (!play || play.mode !== "osu") {
-      await interaction.reply({ content: "❌ このプレイは直近のosu!standard履歴にありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
+    const play = recent.plays.find((candidate) => candidate.scoreId === accountScoreId);
+    if (!play) {
+      await interaction.reply({ content: "❌ このプレイは直近100件にないか、ダウンロード可能なReplayがありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
       return;
     }
-    url = `https://osu.ppy.sh/scores/osu/${play.osuScoreId}`;
+    url = `https://osu.ppy.sh/scores/osu/${play.scoreId}`;
   }
 
   await interaction.deferReply();

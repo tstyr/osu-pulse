@@ -5,7 +5,7 @@ import {
 } from "discord.js";
 
 import { dispatchDueReminders } from "./automation";
-import { handleCommand } from "./handlers";
+import { handleAccountAutocomplete, handleCommand } from "./handlers";
 import {
   createLavalinkManager,
   destroyMusicPanels,
@@ -49,6 +49,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === "render") await handleRenderAutocomplete(interaction);
+      else if (["osu", "stats"].includes(interaction.commandName)) {
+        await handleAccountAutocomplete(interaction);
+      }
       return;
     }
     if (interaction.isButton() && isMusicButton(interaction)) {
