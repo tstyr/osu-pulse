@@ -14,7 +14,7 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName("link")
-        .setDescription("自分のosu!アカウントを追加登録")
+        .setDescription("自分のDiscordにosu!アカウントを登録・変更")
         .addStringOption((option) => option.setName("username").setDescription("osu! username または user ID").setRequired(true))
         .addStringOption((option) => option.setName("mode").setDescription("メインモード").addChoices(...modeChoices)),
     )
@@ -23,7 +23,6 @@ export const commands = [
         .setName("profile")
         .setDescription("登録済みプロフィールを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
-        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
@@ -31,7 +30,6 @@ export const commands = [
         .setName("recent")
         .setDescription("最新リザルトを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
-        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
@@ -39,27 +37,15 @@ export const commands = [
         .setName("growth")
         .setDescription("成長グラフを表示")
         .addUserOption((option) => option.setName("user").setDescription("Discordユーザー"))
-        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
         .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
     )
     .addSubcommand((subcommand) =>
       subcommand
         .setName("daily")
         .setDescription("毎日の成長DMを設定")
-        .addBooleanOption((option) => option.setName("enabled").setDescription("DMを有効にする").setRequired(true))
-        .addStringOption((option) => option.setName("account").setDescription("対象のosu! username / user ID（省略時は全登録）").setAutocomplete(true)),
+        .addBooleanOption((option) => option.setName("enabled").setDescription("DMを有効にする").setRequired(true)),
     )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("accounts")
-        .setDescription("登録済みのosu!アカウント一覧を表示"),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("unlink")
-        .setDescription("指定した登録と追跡データを削除")
-        .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（複数登録時は必須）").setAutocomplete(true)),
-    ),
+    .addSubcommand((subcommand) => subcommand.setName("unlink").setDescription("自分のDiscordとの登録を解除")),
 
   new SlashCommandBuilder()
     .setName("setup")
@@ -77,7 +63,6 @@ export const commands = [
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("自分とBot全体の統計を表示")
-    .addStringOption((option) => option.setName("account").setDescription("osu! username または user ID（省略時は最初の登録）").setAutocomplete(true))
     .addStringOption((option) => option.setName("mode").setDescription("モード").addChoices(...modeChoices)),
 
   new SlashCommandBuilder()
@@ -129,10 +114,10 @@ export const commands = [
       .setAutocomplete(true))
     .addStringOption((option) => option.setName("url").setDescription("osu! Result URL"))
     .addAttachmentOption((option) => option.setName("replay").setDescription(".osr Replayファイル"))
-    .addStringOption((option) => option.setName("resolution").setDescription("動画解像度（既定: 2560x1600）").addChoices(
-      { name: "1920x1080 (16:9)", value: "1920x1080" },
+    .addStringOption((option) => option.setName("resolution").setDescription("動画解像度（既定: 1920x1080）").addChoices(
+      { name: "1920x1080 (16:9 / default)", value: "1920x1080" },
       { name: "2560x1440 (16:9)", value: "2560x1440" },
-      { name: "2560x1600 (16:10 / default)", value: "2560x1600" },
+      { name: "2560x1600 (16:10)", value: "2560x1600" },
       { name: "3840x2160 (4K)", value: "3840x2160" },
     ))
     .addIntegerOption((option) => option.setName("fps").setDescription("動画FPS（既定: 60）").addChoices(

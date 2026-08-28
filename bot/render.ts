@@ -307,7 +307,7 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
   let progressMessage: Message | null = null;
   const client = new RendererClient();
   const options: RenderOptions = {
-    resolution: interaction.options.getString("resolution") ?? "2560x1600",
+    resolution: interaction.options.getString("resolution") ?? "1920x1080",
     fps: interaction.options.getInteger("fps") ?? 60,
     speed: interaction.options.getString("speed") ?? "original",
     motionBlur: interaction.options.getBoolean("motion_blur") ?? false,

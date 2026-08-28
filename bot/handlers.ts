@@ -1,5 +1,4 @@
 import {
-  type AutocompleteInteraction,
   ChatInputCommandInteraction,
   EmbedBuilder,
   MessageFlags,
@@ -14,7 +13,6 @@ import {
   createFocusSession,
   createReminder,
   getAccountByDiscord,
-  getAccountsByDiscord,
   getActiveFocusSession,
   getGrowthHistory,
   getLatestSnapshots,
@@ -41,38 +39,6 @@ type HandlerContext = {
   lavalink: LavalinkManager | null;
 };
 
-export async function handleAccountAutocomplete(
-  interaction: AutocompleteInteraction,
-) {
-  const focused = interaction.options.getFocused(true);
-  if (focused.name !== "account") {
-    await interaction.respond([]);
-    return;
-  }
-
-  try {
-    const targetOption = interaction.options.get("user");
-    const discordUserId = typeof targetOption?.value === "string"
-      ? targetOption.value
-      : interaction.user.id;
-    const query = String(focused.value).trim().toLocaleLowerCase("en-US");
-    const linked = await getAccountsByDiscord(discordUserId);
-    const choices = linked
-      .map((account) => ({
-        name: `${account.username} (${account.osuUserId})`.slice(0, 100),
-        value: account.username,
-      }))
-      .filter((choice) =>
-        !query || choice.name.toLocaleLowerCase("en-US").includes(query),
-      )
-      .slice(0, 25);
-    await interaction.respond(choices);
-  } catch (error) {
-    console.error("[osu] account autocomplete failed:", error);
-    await interaction.respond([]).catch(() => undefined);
-  }
-}
-
 function webUrl(path: string) {
   return `${(process.env.WEB_APP_URL ?? "http://localhost:3000").replace(/\/$/, "")}${path}`;
 }
@@ -84,12 +50,7 @@ function modeFromOption(interaction: ChatInputCommandInteraction, fallback: OsuM
 
 async function targetAccount(interaction: ChatInputCommandInteraction) {
   const target = interaction.options.getUser("user") ?? interaction.user;
-  const selector = interaction.options.getString("account")?.trim() || null;
-  return {
-    target,
-    selector,
-    account: await getAccountByDiscord(target.id, selector),
-  };
+  return { target, account: await getAccountByDiscord(target.id) };
 }
 
 async function replyNotLinked(interaction: ChatInputCommandInteraction) {
@@ -142,45 +103,21 @@ async function handleOsu(interaction: ChatInputCommandInteraction) {
   }
 
   if (subcommand === "unlink") {
-    const selector = interaction.options.getString("account")?.trim() || null;
-    const deleted = await unlinkAccount(interaction.user.id, selector);
-    await interaction.reply({ content: deleted ? `**${deleted.username}** の登録と追跡データを削除しました。` : "登録済みアカウントはありません。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (subcommand === "accounts") {
-    const linked = await getAccountsByDiscord(interaction.user.id);
-    if (linked.length === 0) return replyNotLinked(interaction);
-    const lines = linked.map((account, index) =>
-      `${index + 1}. **${account.username}**${index === 0 ? " · default" : ""}\n   ID: \`${account.osuUserId}\` · ${MODE_LABELS[account.primaryMode]}`,
-    );
-    await interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setColor(0xff66aa)
-        .setTitle(`登録済みosu!アカウント · ${linked.length}件`)
-        .setDescription(lines.join("\n\n"))
-        .setFooter({ text: "各コマンドの account にはusernameまたはuser IDを指定できます" })],
-      flags: MessageFlags.Ephemeral,
-    });
+    const deleted = await unlinkAccount(interaction.user.id);
+    await interaction.reply({ content: deleted ? `**${deleted.username}** との登録を解除しました。` : "登録済みアカウントはありません。", flags: MessageFlags.Ephemeral });
     return;
   }
 
   if (subcommand === "daily") {
     const enabled = interaction.options.getBoolean("enabled", true);
-    const selector = interaction.options.getString("account")?.trim() || null;
-    const updated = await setDailyDm(interaction.user.id, enabled, selector);
-    if (updated.length === 0) return replyNotLinked(interaction);
-    const target = selector ? `**${updated[0].username}**` : `${updated.length}件の登録アカウント`;
-    await interaction.reply({ content: enabled ? `✅ ${target}の毎日21:00（JST）の成長DMを有効にしました。` : `${target}の成長DMを停止しました。`, flags: MessageFlags.Ephemeral });
+    const updated = await setDailyDm(interaction.user.id, enabled);
+    if (!updated) return replyNotLinked(interaction);
+    await interaction.reply({ content: enabled ? "✅ 毎日21:00（JST）の成長DMを有効にしました。" : "成長DMを停止しました。", flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const { target, selector, account } = await targetAccount(interaction);
-  if (!account) {
-    if (!selector) return replyNotLinked(interaction);
-    await interaction.reply({ content: "指定したosu!アカウントは登録されていません。", flags: MessageFlags.Ephemeral });
-    return;
-  }
+  const { target, account } = await targetAccount(interaction);
+  if (!account) return replyNotLinked(interaction);
   const mode = modeFromOption(interaction, account.primaryMode);
 
   if (subcommand === "profile") {
@@ -225,10 +162,7 @@ async function handleSetup(interaction: ChatInputCommandInteraction) {
 
 async function handleStats(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
-  const account = await getAccountByDiscord(
-    interaction.user.id,
-    interaction.options.getString("account")?.trim() || null,
-  );
+  const account = await getAccountByDiscord(interaction.user.id);
   const overview = await getOverviewCounts();
   const embed = new EmbedBuilder().setColor(0xff66aa).setTitle("osu pulse statistics").addFields(
     { name: "Tracked players", value: formatNumber(overview.accounts), inline: true },

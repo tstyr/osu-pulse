@@ -30,7 +30,7 @@ const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
 );
 
 export const renderOptionsSchema = z.object({
-  resolution: z.enum(RENDER_RESOLUTIONS).default("2560x1600"),
+  resolution: z.enum(RENDER_RESOLUTIONS).default("1920x1080"),
   fps: z.coerce.number().pipe(z.union(RENDER_FPS.map((fps) => z.literal(fps)))).default(60),
   speed: z.enum(RENDER_SPEEDS).default("original"),
   motionBlur: z.preprocess(

@@ -301,7 +301,7 @@ export function RenderClient() {
 
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
               <label className="text-[10px] text-zinc-500">解像度
-                <select name="resolution" defaultValue="2560x1600" className="mt-1.5 h-10 w-full rounded-lg border border-white/[0.08] bg-[#111119] px-2 text-xs text-zinc-200 outline-none">
+                <select name="resolution" defaultValue="1920x1080" className="mt-1.5 h-10 w-full rounded-lg border border-white/[0.08] bg-[#111119] px-2 text-xs text-zinc-200 outline-none">
                   <option>1920x1080</option><option>2560x1440</option><option>2560x1600</option><option>3840x2160</option>
                 </select>
               </label>

@@ -36,6 +36,13 @@
       "when": 1787913867558,
       "tag": "0004_lush_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787916546928,
+      "tag": "0005_true_tana_nile",
+      "breakpoints": true
     }
   ]
 }

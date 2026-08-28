@@ -1,4 +1,4 @@
-import { getRecentPlays, getSnapshotDelta, listAccounts } from "@/db/repository";
+import { getRecentPlays, getSnapshotDelta, listDailyDigestTargets } from "@/db/repository";
 import { formatAccuracy, formatNumber, formatRank, formatScoreAccuracy } from "@/lib/format";
 import { MODE_ACCENTS, MODE_LABELS } from "@/lib/osu/modes";
 import { sendDiscordDm } from "@/lib/discord/rest";
@@ -8,18 +8,19 @@ function colorToInt(hex: string) {
 }
 
 export async function sendDailyDigests() {
-  const accounts = await listAccounts();
+  const targets = await listDailyDigestTargets();
   const appUrl = process.env.WEB_APP_URL ?? "http://localhost:3000";
   const results: Array<{ accountId: string; status: "sent" | "skipped" | "failed"; error?: string }> = [];
 
-  for (const account of accounts) {
-    if (!account.dailyDmEnabled) {
+  for (const target of targets) {
+    const account = target.account;
+    if (!target.dailyDmEnabled) {
       results.push({ accountId: account.id, status: "skipped" });
       continue;
     }
 
     try {
-      const mode = account.primaryMode;
+      const mode = target.primaryMode;
       const [{ latest, previous }, recent] = await Promise.all([
         getSnapshotDelta(account.id, mode),
         getRecentPlays(account.id, mode, 5),
@@ -34,7 +35,7 @@ export async function sendDailyDigests() {
       const playGain = latest.playCount - (previous?.playCount ?? latest.playCount);
       const topPlay = recent.filter((play) => play.pp !== null).sort((a, b) => (b.pp ?? 0) - (a.pp ?? 0))[0];
 
-      await sendDiscordDm(account.discordUserId, {
+      await sendDiscordDm(target.discordUserId, {
         content: `おつかれさま、**${account.username}**。今日の成長レポートです。`,
         embeds: [{
           title: `Daily growth · ${MODE_LABELS[mode]}`,

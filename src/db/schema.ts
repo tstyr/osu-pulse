@@ -58,14 +58,12 @@ export const accounts = pgTable(
   "accounts",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    discordUserId: text("discord_user_id").notNull(),
     osuUserId: bigint("osu_user_id", { mode: "number" }).notNull().unique(),
     username: text("username").notNull(),
     countryCode: text("country_code"),
     avatarUrl: text("avatar_url"),
     primaryMode: osuModeEnum("primary_mode").notNull().default("osu"),
     timezone: text("timezone").notNull().default("Asia/Tokyo"),
-    dailyDmEnabled: boolean("daily_dm_enabled").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -75,7 +73,27 @@ export const accounts = pgTable(
   },
   (table) => [
     index("accounts_osu_user_idx").on(table.osuUserId),
-    index("accounts_discord_user_idx").on(table.discordUserId),
+  ],
+);
+
+export const discordAccountLinks = pgTable(
+  "discord_account_links",
+  {
+    discordUserId: text("discord_user_id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    primaryMode: osuModeEnum("primary_mode").notNull().default("osu"),
+    dailyDmEnabled: boolean("daily_dm_enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("discord_account_links_account_idx").on(table.accountId),
   ],
 );
 
@@ -318,6 +336,7 @@ export const cloudRendererState = pgTable("cloud_renderer_state", {
 });
 
 export type Account = typeof accounts.$inferSelect;
+export type DiscordAccountLink = typeof discordAccountLinks.$inferSelect;
 export type GuildSettings = typeof guildSettings.$inferSelect;
 export type ScoreEvent = typeof scoreEvents.$inferSelect;
 export type DailySnapshot = typeof dailySnapshots.$inferSelect;

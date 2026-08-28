@@ -37,7 +37,7 @@ def _parse_bool(value: object, default: bool = False) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class RenderOptions:
-    resolution: str = "2560x1600"
+    resolution: str = "1920x1080"
     fps: int = 60
     speed: str = "original"
     motion_blur: bool = False
@@ -50,7 +50,7 @@ class RenderOptions:
         speed: object = None,
         motion_blur: object = None,
     ) -> "RenderOptions":
-        resolution_value = str(resolution or "2560x1600")
+        resolution_value = str(resolution or "1920x1080")
         try:
             fps_value = int(fps or 60)
         except (TypeError, ValueError) as exc:

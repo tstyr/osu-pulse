@@ -19,6 +19,7 @@ import {
   accountGuilds,
   accounts,
   dailySnapshots,
+  discordAccountLinks,
   focusSessions,
   guildSettings,
   reminders,
@@ -40,18 +41,13 @@ export async function linkAccount(input: {
   primaryMode: OsuMode;
 }) {
   const db = getDb();
-  const existingOsu = await db.query.accounts.findFirst({
-    where: eq(accounts.osuUserId, input.user.id),
+  const previousLink = await db.query.discordAccountLinks.findFirst({
+    where: eq(discordAccountLinks.discordUserId, input.discordUserId),
   });
-
-  if (existingOsu && existingOsu.discordUserId !== input.discordUserId) {
-    throw new Error("このosu!アカウントは別のDiscordユーザーに登録済みです。");
-  }
 
   const [account] = await db
     .insert(accounts)
     .values({
-      discordUserId: input.discordUserId,
       osuUserId: input.user.id,
       username: input.user.username,
       avatarUrl: input.user.avatar_url,
@@ -72,9 +68,23 @@ export async function linkAccount(input: {
     .returning();
 
   if (!account) throw new Error("アカウント登録に失敗しました。");
-  if (account.discordUserId !== input.discordUserId) {
-    throw new Error("このosu!アカウントは別のDiscordユーザーに登録済みです。");
-  }
+
+  await db
+    .insert(discordAccountLinks)
+    .values({
+      discordUserId: input.discordUserId,
+      accountId: account.id,
+      primaryMode: input.primaryMode,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: discordAccountLinks.discordUserId,
+      set: {
+        accountId: account.id,
+        primaryMode: input.primaryMode,
+        updatedAt: new Date(),
+      },
+    });
 
   if (input.guildId) {
     await ensureGuild(input.guildId);
@@ -82,6 +92,16 @@ export async function linkAccount(input: {
       .insert(accountGuilds)
       .values({ accountId: account.id, guildId: input.guildId })
       .onConflictDoNothing();
+  }
+
+  if (previousLink && previousLink.accountId !== account.id) {
+    const [remaining] = await db
+      .select({ value: count() })
+      .from(discordAccountLinks)
+      .where(eq(discordAccountLinks.accountId, previousLink.accountId));
+    if ((remaining?.value ?? 0) === 0) {
+      await db.delete(accounts).where(eq(accounts.id, previousLink.accountId));
+    }
   }
 
   return account;
@@ -104,30 +124,40 @@ export async function updateAccountIdentity(
 }
 
 export async function getAccountsByDiscord(discordUserId: string) {
-  return getDb().query.accounts.findMany({
-    where: eq(accounts.discordUserId, discordUserId),
-    orderBy: [asc(accounts.createdAt), asc(accounts.id)],
-  });
+  const rows = await getDb()
+    .select({
+      account: accounts,
+      primaryMode: discordAccountLinks.primaryMode,
+    })
+    .from(discordAccountLinks)
+    .innerJoin(accounts, eq(discordAccountLinks.accountId, accounts.id))
+    .where(eq(discordAccountLinks.discordUserId, discordUserId))
+    .orderBy(asc(discordAccountLinks.createdAt));
+  return rows.map((row) => ({
+    ...row.account,
+    primaryMode: row.primaryMode,
+  }));
 }
 
-function matchesAccountSelector(
-  account: typeof accounts.$inferSelect,
-  selector: string,
-) {
-  const normalized = selector.trim().toLocaleLowerCase("en-US");
-  return (
-    String(account.osuUserId) === normalized ||
-    account.username.toLocaleLowerCase("en-US") === normalized
-  );
+export async function listDailyDigestTargets() {
+  return getDb()
+    .select({
+      discordUserId: discordAccountLinks.discordUserId,
+      dailyDmEnabled: discordAccountLinks.dailyDmEnabled,
+      primaryMode: discordAccountLinks.primaryMode,
+      account: accounts,
+    })
+    .from(discordAccountLinks)
+    .innerJoin(accounts, eq(discordAccountLinks.accountId, accounts.id))
+    .orderBy(
+      asc(discordAccountLinks.createdAt),
+      asc(discordAccountLinks.discordUserId),
+    );
 }
 
-export async function getAccountByDiscord(
-  discordUserId: string,
-  selector?: string | null,
-) {
+export async function getAccountByDiscord(discordUserId: string) {
   const linked = await getAccountsByDiscord(discordUserId);
-  if (!selector?.trim()) return linked[0];
-  return linked.find((account) => matchesAccountSelector(account, selector));
+  return linked[0];
 }
 
 export async function getAccountByOsuId(osuUserId: number) {
@@ -148,62 +178,37 @@ export async function listAccounts() {
 
 export async function unlinkAccount(
   discordUserId: string,
-  selector?: string | null,
 ) {
-  const linked = await getAccountsByDiscord(discordUserId);
-  if (linked.length === 0) return undefined;
+  const db = getDb();
+  const account = await getAccountByDiscord(discordUserId);
+  if (!account) return undefined;
 
-  const selected = selector?.trim()
-    ? linked.find((account) => matchesAccountSelector(account, selector))
-    : linked.length === 1
-      ? linked[0]
-      : undefined;
-
-  if (!selected) {
-    if (!selector?.trim() && linked.length > 1) {
-      throw new Error(
-        "複数のosu!アカウントが登録されています。`account` に解除するusernameまたはuser IDを指定してください。",
-      );
-    }
-    throw new Error("指定したosu!アカウントは登録されていません。");
-  }
-
-  const [deleted] = await getDb()
-    .delete(accounts)
-    .where(
-      and(
-        eq(accounts.discordUserId, discordUserId),
-        eq(accounts.id, selected.id),
-      ),
-    )
+  const [deleted] = await db
+    .delete(discordAccountLinks)
+    .where(eq(discordAccountLinks.discordUserId, discordUserId))
     .returning();
-  return deleted;
+  if (!deleted) return undefined;
+
+  const [remaining] = await db
+    .select({ value: count() })
+    .from(discordAccountLinks)
+    .where(eq(discordAccountLinks.accountId, account.id));
+  if ((remaining?.value ?? 0) === 0) {
+    await db.delete(accounts).where(eq(accounts.id, account.id));
+  }
+  return account;
 }
 
 export async function setDailyDm(
   discordUserId: string,
   enabled: boolean,
-  selector?: string | null,
 ) {
-  const selected = selector?.trim()
-    ? await getAccountByDiscord(discordUserId, selector)
-    : undefined;
-  if (selector?.trim() && !selected) {
-    throw new Error("指定したosu!アカウントは登録されていません。");
-  }
-
-  return getDb()
-    .update(accounts)
+  const [updated] = await getDb()
+    .update(discordAccountLinks)
     .set({ dailyDmEnabled: enabled, updatedAt: new Date() })
-    .where(
-      selected
-        ? and(
-            eq(accounts.discordUserId, discordUserId),
-            eq(accounts.id, selected.id),
-          )
-        : eq(accounts.discordUserId, discordUserId),
-    )
+    .where(eq(discordAccountLinks.discordUserId, discordUserId))
     .returning();
+  return updated;
 }
 
 export async function attachAccountToGuild(accountId: string, guildId: string) {
