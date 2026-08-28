@@ -77,6 +77,8 @@ class ScoreMetadata:
     ruleset: str = "osu"
     mods: list[str] = field(default_factory=list)
     score: int | None = None
+    pp: float | None = None
+    rank: str | None = None
     accuracy: float | None = None
     max_combo: int | None = None
     miss_count: int | None = None
@@ -97,6 +99,8 @@ class ScoreMetadata:
             "ruleset": self.ruleset,
             "mods": self.mods,
             "score": self.score,
+            "pp": self.pp,
+            "rank": self.rank,
             "accuracy": self.accuracy,
             "max_combo": self.max_combo,
             "miss_count": self.miss_count,
@@ -124,10 +128,16 @@ class RenderJob:
     output_path: Path | None = None
     error_code: str | None = None
     error: str | None = None
+    youtube_video_id: str | None = None
+    youtube_url: str | None = None
+    youtube_title: str | None = None
+    youtube_privacy_status: str | None = None
+    youtube_error: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     queued_at: datetime | None = None
     render_started_at: datetime | None = None
+    render_finished_at: datetime | None = None
     completed_at: datetime | None = None
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     cancel_requested: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -141,7 +151,7 @@ class RenderJob:
     def public_dict(self) -> dict[str, Any]:
         render_duration = None
         if self.render_started_at:
-            end = self.completed_at or utc_now()
+            end = self.render_finished_at or self.completed_at or utc_now()
             render_duration = round((end - self.render_started_at).total_seconds(), 2)
         return {
             "job_id": self.id,
@@ -158,6 +168,11 @@ class RenderJob:
             },
             "error_code": self.error_code,
             "error": self.error,
+            "youtube_video_id": self.youtube_video_id,
+            "youtube_url": self.youtube_url,
+            "youtube_title": self.youtube_title,
+            "youtube_privacy_status": self.youtube_privacy_status,
+            "youtube_error": self.youtube_error,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "render_duration_seconds": render_duration,

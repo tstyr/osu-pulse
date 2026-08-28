@@ -45,6 +45,7 @@ __pycache__/
 # misc
 .DS_Store
 *.pem
+client_secret*.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

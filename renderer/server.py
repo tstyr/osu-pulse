@@ -29,6 +29,7 @@ from .prerequisites import DependencyState, inspect_dependencies
 from .render_options import RenderOptions
 from .system_metrics import SystemMetricsCollector
 from .video_sharer import VideoSharer
+from .youtube_uploader import YouTubeUploader
 
 
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -67,12 +68,14 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         beatmap_downloader = BeatmapDownloader(settings) if settings.auto_download_beatmaps else None
         metrics = SystemMetricsCollector(settings.output_path)
         video_sharer = VideoSharer(settings, dependencies)
+        youtube_uploader = YouTubeUploader(settings)
         manager = JobManager(
             settings,
             osu_api,
             BeatmapResolver(beatmap_index),
             DanserRunner(settings, dependencies),
             beatmap_downloader,
+            youtube_uploader,
         )
         await manager.start()
         cloud_bridge = CloudRenderBridge(settings, manager, dependencies, video_sharer)
@@ -279,6 +282,7 @@ def print_startup_summary(settings: Settings, dependencies: DependencyState) -> 
     print(f"std Skin     : {settings.standard_skin if dependencies.standard_skin else 'NOT FOUND'}")
     print(f"mania Skin   : {settings.mania_skin if dependencies.mania_skin else 'NOT FOUND'}")
     print(f"osu! API     : {'OK' if dependencies.osu_api else 'MISSING CREDENTIALS'}")
+    print(f"YouTube      : {'READY (unlisted)' if dependencies.youtube_upload else 'NOT CONFIGURED'}")
     print(f"GPU Encoder  : {gpu_encoder}")
     print(f"Render Slots : {settings.max_concurrent_renders}\n")
     storage_ready = bool(

@@ -12,6 +12,7 @@ export type RendererHealth = {
   standard_skin: boolean;
   mania_skin: boolean;
   osu_api: boolean;
+  youtube_upload: boolean;
   nvenc: boolean;
   amf: boolean;
   songs_index_ready: boolean;
@@ -57,6 +58,8 @@ export type RenderMetadata = {
   ruleset: string;
   mods: string[];
   score: number | null;
+  pp: number | null;
+  rank: string | null;
   accuracy: number | null;
   max_combo: number | null;
   miss_count: number | null;
@@ -79,6 +82,11 @@ export type RenderJobStatus = {
   };
   error_code: string | null;
   error: string | null;
+  youtube_video_id: string | null;
+  youtube_url: string | null;
+  youtube_title: string | null;
+  youtube_privacy_status: "private" | "unlisted" | "public" | null;
+  youtube_error: string | null;
   render_duration_seconds: number | null;
 };
 

@@ -213,17 +213,25 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 }
 
-function downloadComponents(url: string) {
+function downloadComponents(url: string, youtubeUrl: string | null) {
   if (url.length > 512) return [];
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setLabel("動画をダウンロード")
         .setEmoji("📥")
         .setStyle(ButtonStyle.Link)
         .setURL(url),
-    ),
-  ];
+    );
+  if (youtubeUrl && youtubeUrl.length <= 512 && /^https:\/\/youtu\.be\/[A-Za-z0-9_-]+$/.test(youtubeUrl)) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel("YouTubeで見る")
+        .setEmoji("▶️")
+        .setStyle(ButtonStyle.Link)
+        .setURL(youtubeUrl),
+    );
+  }
+  return [row];
 }
 
 function renderEmbed(job: RenderJobStatus) {
@@ -245,6 +253,7 @@ function renderEmbed(job: RenderJobStatus) {
   }
   if (metadata) {
     embed.addFields(
+      { name: "Rank / PP", value: `${metadata.rank ?? "—"} / ${metadata.pp == null ? "—" : `${metadata.pp.toFixed(1)}pp`}`, inline: true },
       { name: "Mods", value: metadata.mods.length ? metadata.mods.join("") : "NM", inline: true },
       { name: "Accuracy", value: metadata.accuracy == null ? "—" : `${(metadata.accuracy * 100).toFixed(2)}%`, inline: true },
       { name: "Combo / Miss", value: `${metadata.max_combo == null ? "—" : `${metadata.max_combo}x`} / ${metadata.miss_count ?? "—"}`, inline: true },
@@ -383,13 +392,18 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
         });
         const shared = await client.shareVideo(job.job_id);
         const provider = shared.provider === "r2" ? "Cloudflare R2" : "Vercel Blob";
-        const components = downloadComponents(shared.url);
+        const components = downloadComponents(shared.url, job.youtube_url);
         const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
         const saved = shared.original_size && shared.original_size > shared.size
           ? ` · 圧縮前 ${fileSizeLabel(shared.original_size)}（${Math.round((1 - shared.size / shared.original_size) * 100)}%削減）`
           : "";
+        const youtube = job.youtube_url
+          ? `\n▶️ YouTubeへ${job.youtube_privacy_status === "unlisted" ? "限定公開" : job.youtube_privacy_status === "private" ? "非公開" : "公開"}で投稿しました。`
+          : job.youtube_error
+            ? "\n⚠️ YouTube自動投稿に失敗しました。Rendererログを確認してください。"
+            : "";
         await progressMessage.edit({
-          content: `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}`,
+          content: `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}`,
           embeds: [renderEmbed(job)],
           components,
         });
@@ -422,6 +436,7 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
         { name: "FFmpeg", value: health.ffmpeg ? "OK" : "NOT FOUND", inline: true },
         { name: "Songs", value: health.osu_songs ? `${health.songs_index_count.toLocaleString()} maps` : "NOT FOUND", inline: true },
         { name: "osu! API", value: health.osu_api ? "OK" : "MISSING CREDENTIALS", inline: true },
+        { name: "YouTube", value: health.youtube_upload ? "AUTO / UNLISTED" : "NOT CONFIGURED", inline: true },
       );
     await interaction.editReply({ embeds: [embed] });
   } catch {

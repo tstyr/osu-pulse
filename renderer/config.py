@@ -38,6 +38,32 @@ def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> 
     return value
 
 
+def _youtube_privacy_status() -> str:
+    value = os.getenv("YOUTUBE_PRIVACY_STATUS", "unlisted").strip().lower()
+    if value not in {"private", "unlisted", "public"}:
+        raise ValueError("YOUTUBE_PRIVACY_STATUS must be private, unlisted, or public")
+    return value
+
+
+def _youtube_category_id() -> str:
+    value = os.getenv("YOUTUBE_CATEGORY_ID", "20").strip()
+    if not value.isascii() or not value.isdigit() or len(value) > 8:
+        raise ValueError("YOUTUBE_CATEGORY_ID must be a numeric YouTube category ID")
+    return value
+
+
+def _youtube_chunk_bytes() -> int:
+    value = _bounded_int_env(
+        "YOUTUBE_UPLOAD_CHUNK_BYTES",
+        8 * 1024 * 1024,
+        minimum=256 * 1024,
+        maximum=64 * 1024 * 1024,
+    )
+    if value % (256 * 1024) != 0:
+        raise ValueError("YOUTUBE_UPLOAD_CHUNK_BYTES must be a multiple of 262144")
+    return value
+
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -125,6 +151,14 @@ class Settings:
     video_compress_quality: int = 24
     video_compress_audio_kbps: int = 160
     video_compress_timeout_seconds: int = 7200
+    youtube_auto_upload: bool = False
+    youtube_client_id: str | None = None
+    youtube_client_secret: str | None = None
+    youtube_refresh_token: str | None = None
+    youtube_privacy_status: str = "unlisted"
+    youtube_category_id: str = "20"
+    youtube_upload_timeout_seconds: int = 7200
+    youtube_chunk_bytes: int = 8 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -179,6 +213,14 @@ class Settings:
             video_compress_quality=_bounded_int_env("VIDEO_COMPRESS_QUALITY", 24, minimum=18, maximum=32),
             video_compress_audio_kbps=_bounded_int_env("VIDEO_COMPRESS_AUDIO_KBPS", 160, minimum=64, maximum=320),
             video_compress_timeout_seconds=_int_env("VIDEO_COMPRESS_TIMEOUT_SECONDS", 7200, minimum=60),
+            youtube_auto_upload=_bool_env("YOUTUBE_AUTO_UPLOAD", False),
+            youtube_client_id=os.getenv("YOUTUBE_CLIENT_ID") or None,
+            youtube_client_secret=os.getenv("YOUTUBE_CLIENT_SECRET") or None,
+            youtube_refresh_token=os.getenv("YOUTUBE_REFRESH_TOKEN") or None,
+            youtube_privacy_status=_youtube_privacy_status(),
+            youtube_category_id=_youtube_category_id(),
+            youtube_upload_timeout_seconds=_int_env("YOUTUBE_UPLOAD_TIMEOUT_SECONDS", 7200, minimum=60),
+            youtube_chunk_bytes=_youtube_chunk_bytes(),
         )
 
     def ensure_directories(self) -> None:

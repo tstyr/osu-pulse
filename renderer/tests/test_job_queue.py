@@ -14,6 +14,7 @@ from renderer.models import JobStatus, RenderJob, ScoreMetadata
 from renderer.render_options import RenderOptions
 from renderer.tests.helpers import replay_bytes
 from renderer.tests.test_api import test_settings
+from renderer.youtube_uploader import YouTubeUploadError, YouTubeUploadResult
 
 
 class FakeRunner:
@@ -43,6 +44,25 @@ class FakeOsuApi:
     pass
 
 
+class FakeYouTubeUploader:
+    configured = True
+
+    def __init__(self) -> None:
+        self.uploaded: list[Path] = []
+
+    async def upload(self, video: Path, _metadata: ScoreMetadata, progress) -> YouTubeUploadResult:
+        self.uploaded.append(video)
+        progress(100)
+        return YouTubeUploadResult("abc123XYZ", "https://youtu.be/abc123XYZ", "S | —pp | 98.00% | Song", "unlisted")
+
+
+class FailingYouTubeUploader:
+    configured = True
+
+    async def upload(self, _video: Path, _metadata: ScoreMetadata, _progress) -> YouTubeUploadResult:
+        raise YouTubeUploadError("quota exceeded")
+
+
 class FakeLookupApi:
     def __init__(self) -> None:
         self.checksum: str | None = None
@@ -67,6 +87,29 @@ class FakeDownloader:
 
 
 class JobQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_youtube_failure_is_recorded_without_failing_render(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = test_settings(root)
+            settings.ensure_directories()
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            manager = JobManager(  # type: ignore[arg-type]
+                settings,
+                FakeOsuApi(),
+                BeatmapResolver(index),
+                FakeRunner(settings.output_path),
+                youtube_uploader=FailingYouTubeUploader(),
+            )
+            output = settings.output_path / "job.mp4"
+            output.write_bytes(b"video")
+            job = RenderJob("job", "100", "replay", "source", RenderOptions(), metadata=ScoreMetadata())
+            job.output_path = output
+
+            await manager._upload_youtube(job)
+
+            self.assertEqual(job.youtube_error, "quota exceeded")
+            self.assertIsNone(job.youtube_url)
+
     async def test_only_one_render_runs_at_a_time(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -81,7 +124,14 @@ class JobQueueTests(unittest.IsolatedAsyncioTestCase):
             index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
             index.rebuild()
             runner = FakeRunner(settings.output_path)
-            manager = JobManager(settings, FakeOsuApi(), BeatmapResolver(index), runner)  # type: ignore[arg-type]
+            youtube = FakeYouTubeUploader()
+            manager = JobManager(  # type: ignore[arg-type]
+                settings,
+                FakeOsuApi(),
+                BeatmapResolver(index),
+                runner,
+                youtube_uploader=youtube,
+            )
             await manager.start()
             try:
                 options = RenderOptions()
@@ -97,6 +147,8 @@ class JobQueueTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.01)
                 self.assertTrue(all(job.status == JobStatus.COMPLETED for job in jobs))
                 self.assertEqual(runner.maximum_active, 1)
+                self.assertEqual(len(youtube.uploaded), 3)
+                self.assertTrue(all(job.youtube_privacy_status == "unlisted" for job in jobs))
             finally:
                 await manager.stop()
 

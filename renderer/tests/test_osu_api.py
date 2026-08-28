@@ -17,6 +17,9 @@ class OsuApiFallbackTests(unittest.IsolatedAsyncioTestCase):
             httpx.Response(200, json={
                 "id": 7_361_453_550,
                 "ruleset": "osu",
+                "pp": 321.45,
+                "rank": "S",
+                "accuracy": 0.9876,
                 "beatmap": {"id": 1, "version": "Hard"},
                 "beatmapset": {"id": 2, "artist": "Artist", "title": "Title"},
             }),
@@ -26,6 +29,8 @@ class OsuApiFallbackTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
         self.assertEqual(metadata.score_id, 7_361_453_550)
+        self.assertEqual(metadata.pp, 321.45)
+        self.assertEqual(metadata.rank, "S")
         self.assertEqual(
             [call.args[0] for call in client._get.await_args_list],
             ["/api/v2/scores/osu/7361453550", "/api/v2/scores/7361453550"],

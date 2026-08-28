@@ -18,6 +18,7 @@ from .osu_api import OsuApiClient
 from .render_options import RenderOptions
 from .replay_parser import mods_from_bits, parse_replay
 from .score_resolver import parse_score_url
+from .youtube_uploader import YouTubeUploader, YouTubeUploadError
 
 
 LOGGER = logging.getLogger("renderer.jobs")
@@ -33,12 +34,14 @@ class JobManager:
         beatmaps: BeatmapResolver,
         runner: DanserRunner,
         beatmap_downloader: BeatmapDownloader | None = None,
+        youtube_uploader: YouTubeUploader | None = None,
     ) -> None:
         self.settings = settings
         self.osu_api = osu_api
         self.beatmaps = beatmaps
         self.runner = runner
         self.beatmap_downloader = beatmap_downloader
+        self.youtube_uploader = youtube_uploader
         self.jobs: dict[str, RenderJob] = {}
         self._render_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_ids: list[str] = []
@@ -254,8 +257,16 @@ class JobManager:
                 replay_path = self._job_dir(job.id) / "replay.osr"
                 output = await self.runner.render(job, replay_path)
                 job.output_path = output
+                job.render_finished_at = utc_now()
+                if self.youtube_uploader and self.youtube_uploader.configured and job.metadata:
+                    await self._upload_youtube(job)
                 job.completed_at = utc_now()
-                job.update(JobStatus.COMPLETED, 100, "Render completed")
+                message = "Render completed"
+                if job.youtube_url:
+                    message += "; YouTube upload completed"
+                elif job.youtube_error:
+                    message += "; YouTube upload failed"
+                job.update(JobStatus.COMPLETED, 100, message)
                 await self._record_terminal("completed")
                 LOGGER.info("job=%s worker=%s render_end duration=%s result=completed", job.id, worker_index, job.public_dict()["render_duration_seconds"])
                 await self._cleanup_temp(job, keep=False)
@@ -271,6 +282,42 @@ class JobManager:
                     await self._mark_failed(job, RenderError(ErrorCode.INTERNAL_ERROR, "Unexpected rendering error"))
             finally:
                 self._render_queue.task_done()
+
+    async def _upload_youtube(self, job: RenderJob) -> None:
+        assert self.youtube_uploader
+        assert job.output_path
+        assert job.metadata
+        job.update(JobStatus.ENCODING, 99, "Uploading to YouTube as unlisted")
+
+        def update_progress(percent: int) -> None:
+            job.update(JobStatus.ENCODING, 99, f"Uploading to YouTube: {percent}%")
+
+        upload = asyncio.create_task(
+            self.youtube_uploader.upload(job.output_path, job.metadata, update_progress),
+            name=f"youtube-upload-{job.id}",
+        )
+        cancelled = asyncio.create_task(job.cancel_requested.wait(), name=f"youtube-cancel-{job.id}")
+        try:
+            done, _ = await asyncio.wait({upload, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+            if cancelled in done and job.cancel_requested.is_set():
+                upload.cancel()
+                await asyncio.gather(upload, return_exceptions=True)
+                raise RenderCancelled()
+            result = await upload
+            job.youtube_video_id = result.video_id
+            job.youtube_url = result.url
+            job.youtube_title = result.title
+            job.youtube_privacy_status = result.privacy_status
+        except YouTubeUploadError as exc:
+            job.youtube_error = str(exc)[:500]
+            LOGGER.error("job=%s youtube_upload_failed error=%s", job.id, job.youtube_error)
+        except Exception:
+            job.youtube_error = "Unexpected YouTube upload failure"
+            LOGGER.exception("job=%s youtube_upload_failed unexpected_error", job.id)
+        finally:
+            if not cancelled.done():
+                cancelled.cancel()
+            await asyncio.gather(cancelled, return_exceptions=True)
 
     async def cancel(self, job_id: str) -> RenderJob:
         job = self.get(job_id)

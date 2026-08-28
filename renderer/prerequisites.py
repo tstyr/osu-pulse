@@ -20,6 +20,7 @@ class DependencyState:
     standard_skin: bool = False
     mania_skin: bool = False
     osu_api: bool = False
+    youtube_upload: bool = False
     nvenc: bool = False
     amf: bool = False
     songs_index_ready: bool = False
@@ -49,6 +50,7 @@ class DependencyState:
             "standard_skin": self.standard_skin,
             "mania_skin": self.mania_skin,
             "osu_api": self.osu_api,
+            "youtube_upload": self.youtube_upload,
             "nvenc": self.nvenc,
             "amf": self.amf,
             "songs_index_ready": self.songs_index_ready,
@@ -112,6 +114,11 @@ async def inspect_dependencies(settings: Settings) -> DependencyState:
         standard_skin=(settings.osu_skins_path / settings.standard_skin / "skin.ini").is_file(),
         mania_skin=(settings.osu_skins_path / settings.mania_skin / "skin.ini").is_file(),
         osu_api=bool(settings.osu_client_id and settings.osu_client_secret),
+        youtube_upload=bool(
+            settings.youtube_auto_upload
+            and settings.youtube_client_id
+            and settings.youtube_refresh_token
+        ),
         nvenc=nvenc_ok,
         amf=amf_ok,
     )

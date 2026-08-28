@@ -203,6 +203,8 @@ def normalize_score(data: dict[str, Any], fallback_score_id: int) -> ScoreMetada
         ruleset=ruleset,
         mods=_mods(data.get("mods")),
         score=_int_or_none(score_value),
+        pp=_float_or_none(data.get("pp")),
+        rank=str(data.get("rank")) if data.get("rank") is not None else None,
         accuracy=_float_or_none(data.get("accuracy")),
         max_combo=_int_or_none(data.get("max_combo")),
         miss_count=_int_or_none(miss),

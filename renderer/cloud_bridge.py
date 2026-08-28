@@ -186,7 +186,7 @@ class CloudRenderBridge:
                 "status": "uploading",
                 "progress": 99,
                 "message": "動画を圧縮して外部ストレージへアップロード中",
-                "metadata": local_job.metadata.public_dict() if local_job.metadata else None,
+                "metadata": self._job_metadata(local_job),
             })
             uploaded = await self._upload_with_lease(cloud_id, local_job)
             await self._patch(cloud_id, {
@@ -194,7 +194,7 @@ class CloudRenderBridge:
                 "status": "completed",
                 "progress": 100,
                 "message": "レンダーが完了しました",
-                "metadata": local_job.metadata.public_dict() if local_job.metadata else None,
+                "metadata": self._job_metadata(local_job),
                 "videoUrl": uploaded["url"],
                 "videoSize": uploaded["size"],
             })
@@ -207,7 +207,7 @@ class CloudRenderBridge:
             "status": STATUS_MAP[job.status],
             "progress": job.progress,
             "message": job.message,
-            "metadata": job.metadata.public_dict() if job.metadata else None,
+            "metadata": self._job_metadata(job),
             "errorCode": job.error_code,
             "error": job.error,
         })
@@ -235,7 +235,7 @@ class CloudRenderBridge:
                         "status": "uploading",
                         "progress": 99,
                         "message": "動画を圧縮して外部ストレージへアップロード中",
-                        "metadata": job.metadata.public_dict() if job.metadata else None,
+                        "metadata": self._job_metadata(job),
                     })
                     await self._heartbeat_request()
             return await upload
@@ -251,4 +251,18 @@ class CloudRenderBridge:
         result = await self.video_sharer.share(local_job.id, local_job.options)
         if not isinstance(result.get("url"), str) or not isinstance(result.get("size"), int):
             raise RuntimeError("Video uploader returned an invalid response")
+        return result
+
+    @staticmethod
+    def _job_metadata(job: RenderJob) -> dict[str, Any] | None:
+        if not job.metadata:
+            return None
+        result = job.metadata.public_dict()
+        result.update({
+            "youtube_video_id": job.youtube_video_id,
+            "youtube_url": job.youtube_url,
+            "youtube_title": job.youtube_title,
+            "youtube_privacy_status": job.youtube_privacy_status,
+            "youtube_error": job.youtube_error,
+        })
         return result

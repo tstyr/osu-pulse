@@ -26,6 +26,7 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/stats` でBot利用統計
 - `/render` でosu!standard / maniaのResult URL、登録アカウントの直近Replay、または`.osr`をMP4化
 - `/render-status` で独立したローカルRendererの状態を確認
+- Renderer完了後、判定・pp・精度・曲名を含むタイトルでYouTubeへ限定公開投稿（OAuth設定時）
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
 - 状況カテゴリは15秒ごとに再取得。Discordの添付上限を超えた完成動画はCloudflare R2（未設定時はVercel Blob）へアップロードしてダウンロードボタンを表示
 - Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成MP4をVercel Blobで受け取る
@@ -76,6 +77,18 @@ RendererはBotとは別プロセスで、`127.0.0.1:8765`だけにBindします�
 既定値は1920x1080・60fps・Original speed・Motion Blur OFFです。stdはdanser + Appu、maniaは専用ModernGL renderer + R Skinへ自動分岐します。起動時に両Renderer、両Skin、FFmpeg、Songs、osu! API、NVIDIA NVENC、AMD AMFを検査し、SongsのBeatmap ID/MD5インデックスを作成します。必要なBeatmapがSongsにない場合は、osu! APIでBeatmapsetを特定し、Hinamizawa mirrorから動画なしの`.osz`を自動取得・安全に展開してインデックスを更新します（`AUTO_DOWNLOAD_BEATMAPS=false`で無効化）。利用可能なGPUエンコーダを自動選択し、失敗時はlibx264へフォールバックします。maniaでは現在Custom speedとMotion Blurは利用できません。
 
 Discordコマンドを追加・変更した後は一度登録し直します。
+
+### YouTube限定公開への自動投稿
+
+YouTube Data API v3を有効にしたGoogle Cloudプロジェクトで、OAuthクライアントを「デスクトップアプリ」として作成し、JSONをダウンロードします。次のコマンドを1回実行するとブラウザでYouTubeチャンネルを選択でき、更新トークンはGit管理外の`renderer/.env`だけへ保存されます。
+
+```powershell
+renderer\.venv\Scripts\python.exe -m renderer.configure_youtube C:\path\to\client_secret.json
+```
+
+認証後に`renderer/start_renderer.bat`を再起動します。以後、レンダー本体の完了後に`判定 | pp | 精度 | Artist - 曲名 [難易度]`形式のタイトルで自動投稿し、登録者への新着通知は送りません。投稿失敗時も完成動画とR2共有は失敗扱いにせず継続します。
+
+`YOUTUBE_PRIVACY_STATUS=unlisted`を要求しますが、2020年7月28日以降に作成された未監査のYouTube APIプロジェクトはGoogle側で非公開に制限されます。限定公開を保証するにはGoogleのAPIコンプライアンス監査が必要です。RendererとDiscordはAPIが実際に返した公開状態を表示します。
 
 ```bash
 npm run bot:register
