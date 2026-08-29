@@ -26,7 +26,7 @@ function formValues(form: FormData) {
 }
 export async function POST(request: Request) {
   try {
-    requireWebRenderAccess(request);
+    await requireWebRenderAccess(request);
     const contentLength = Number(request.headers.get("content-length") ?? "0");
     if (contentLength > 4_400_000) {
       throw new RenderApiError("REPLAY_TOO_LARGE", "Web から送れる .osr は 3 MB までです。", 413);

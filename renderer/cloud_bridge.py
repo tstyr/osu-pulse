@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import set_key
 
 from .config import Settings
 from .errors import RenderError
@@ -15,10 +17,36 @@ from .jobs import JobManager
 from .models import JobStatus, RenderJob, TERMINAL_STATUSES
 from .prerequisites import DependencyState
 from .render_options import RenderOptions
+from .system_metrics import SystemMetricsCollector
 from .video_sharer import VideoSharer
 
 
 LOGGER = logging.getLogger("renderer.cloud")
+RESTART_EXIT_CODE = 75
+SYNCED_ENV_NAMES = frozenset({
+    "MAX_CONCURRENT_RENDERS",
+    "RENDER_TIMEOUT_SECONDS",
+    "OUTPUT_RETENTION_HOURS",
+    "VIDEO_ENCODER",
+    "AUTO_DOWNLOAD_BEATMAPS",
+    "BEATMAP_DOWNLOAD_NO_VIDEO",
+    "VIDEO_COMPRESS",
+    "VIDEO_COMPRESS_QUALITY",
+    "VIDEO_COMPRESS_AUDIO_KBPS",
+    "YOUTUBE_AUTO_UPLOAD",
+    "YOUTUBE_PRIVACY_STATUS",
+    "YOUTUBE_DELETE_AFTER_UPLOAD",
+    "YOUTUBE_CATEGORY_ID",
+    "OSU_CLIENT_ID",
+    "OSU_CLIENT_SECRET",
+    "YOUTUBE_CLIENT_ID",
+    "YOUTUBE_CLIENT_SECRET",
+    "YOUTUBE_REFRESH_TOKEN",
+    "R2_ENDPOINT",
+    "R2_BUCKET",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+})
 STATUS_MAP = {
     JobStatus.CREATED: "claimed",
     JobStatus.RESOLVING_SCORE: "resolving_score",
@@ -40,15 +68,20 @@ class CloudRenderBridge:
         manager: JobManager,
         dependencies: DependencyState,
         video_sharer: VideoSharer,
+        metrics: SystemMetricsCollector,
     ) -> None:
         self.settings = settings
         self.manager = manager
         self.dependencies = dependencies
         self.video_sharer = video_sharer
+        self.metrics = metrics
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
-        self._active_cloud_job_id: str | None = None
-        self._active_local_job: RenderJob | None = None
+        self._jobs: dict[str, asyncio.Task[None]] = {}
+        self._local_jobs: dict[str, RenderJob] = {}
+        self._configuration_version = settings.control_panel_config_version
+        self._pending_configuration_version = settings.control_panel_config_version
+        self._restart_required = False
 
     @property
     def enabled(self) -> bool:
@@ -77,54 +110,131 @@ class CloudRenderBridge:
         if self._task:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
+        for local_job in tuple(self._local_jobs.values()):
+            if local_job.status not in TERMINAL_STATUSES:
+                await self.manager.cancel(local_job.id)
+        for task in self._jobs.values():
+            task.cancel()
+        await asyncio.gather(*self._jobs.values(), return_exceptions=True)
+        self._jobs.clear()
+        self._local_jobs.clear()
         if self._client:
             await self._client.aclose()
 
-    def _heartbeat(self) -> dict[str, Any]:
+    async def _heartbeat(self) -> dict[str, Any]:
+        active_ids = list(self._jobs)
+        capacity = self.settings.max_concurrent_renders
+        encoder = self.settings.video_encoder
+        if encoder == "auto":
+            encoder = "h264_nvenc" if self.dependencies.nvenc else "h264_amf" if self.dependencies.amf else "libx264"
+        metrics = await self.metrics.snapshot(self.manager)
         return {
             "rendererId": self.settings.renderer_id,
             "status": self.dependencies.status,
-            "busy": self._active_cloud_job_id is not None,
+            "busy": len(active_ids) >= capacity,
+            "activeCount": len(active_ids),
+            "capacity": capacity,
             "queueSize": self.manager.queue_size,
-            "activeCloudJobId": self._active_cloud_job_id,
+            "activeCloudJobId": active_ids[0] if len(active_ids) == 1 else None,
+            "configurationVersion": self._configuration_version,
+            "restartRequired": self._restart_required,
             "dependencies": {
                 **self.dependencies.public_dict(),
+                **metrics,
                 "local_rendering": self.manager.active_count,
+                "local_inflight": self.manager.inflight_count,
+                "capacity": capacity,
+                "encoder": encoder,
                 "cloud_bridge": True,
             },
-            "version": "1.1.0",
+            "version": "2.0.0",
         }
 
     async def _run(self) -> None:
         while True:
             try:
-                if not self._active_cloud_job_id:
-                    claimed = await self._claim()
-                    if claimed:
-                        await self._process(claimed)
+                await self._reap_jobs()
+                await self._heartbeat_request()
+                if self._restart_required:
+                    if not self._jobs and self.manager.inflight_count == 0:
+                        LOGGER.warning("Control-panel configuration is ready; restarting renderer")
+                        logging.shutdown()
+                        os._exit(RESTART_EXIT_CODE)
+                else:
+                    await self._fill_capacity()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 LOGGER.exception("Cloud bridge iteration failed")
             await asyncio.sleep(self.settings.cloud_poll_seconds)
 
+    async def _reap_jobs(self) -> None:
+        finished = [(cloud_id, task) for cloud_id, task in self._jobs.items() if task.done()]
+        for cloud_id, task in finished:
+            await asyncio.gather(task, return_exceptions=True)
+            self._jobs.pop(cloud_id, None)
+
+    async def _fill_capacity(self) -> None:
+        while len(self._jobs) < self.settings.max_concurrent_renders and not self._restart_required:
+            claimed = await self._claim()
+            if not claimed:
+                return
+            cloud_id = str(claimed["jobId"])
+            if cloud_id in self._jobs:
+                return
+            self._jobs[cloud_id] = asyncio.create_task(
+                self._process(claimed),
+                name=f"cloud-render-{cloud_id}",
+            )
+
     async def _heartbeat_request(self) -> None:
         assert self._client
-        response = await self._client.post("/api/render/bridge/heartbeat", json=self._heartbeat())
+        response = await self._client.post("/api/render/bridge/heartbeat", json=await self._heartbeat())
         response.raise_for_status()
+        await self._accept_configuration(response.json())
 
     async def _claim(self) -> dict[str, Any] | None:
         assert self._client
-        payload = self._heartbeat()
+        payload = await self._heartbeat()
         payload.pop("activeCloudJobId", None)
         response = await self._client.post("/api/render/bridge/claim", json=payload)
         response.raise_for_status()
         body = response.json()
+        await self._accept_configuration(body)
         return body.get("job") if isinstance(body, dict) else None
+
+    async def _accept_configuration(self, response_body: object) -> None:
+        if not isinstance(response_body, dict):
+            return
+        configuration = response_body.get("configuration")
+        if not isinstance(configuration, dict):
+            return
+        version = configuration.get("version")
+        env = configuration.get("env")
+        if not isinstance(version, int) or version <= self._pending_configuration_version or not isinstance(env, dict):
+            return
+        filtered: dict[str, str] = {}
+        for name, value in env.items():
+            if name in SYNCED_ENV_NAMES and isinstance(value, str) and len(value) <= 16_384:
+                filtered[name] = value
+        if not filtered:
+            return
+        await asyncio.to_thread(self._write_environment, filtered, version)
+        self._pending_configuration_version = version
+        self._restart_required = True
+        LOGGER.info("Control-panel configuration v%s saved; restart deferred until idle", version)
+
+    @staticmethod
+    def _write_environment(values: dict[str, str], version: int) -> None:
+        env_path = Path(__file__).resolve().parent / ".env"
+        env_path.touch(exist_ok=True)
+        for name, value in values.items():
+            set_key(env_path, name, value)
+        set_key(env_path, "CONTROL_PANEL_CONFIG_VERSION", str(version))
 
     async def _process(self, cloud_job: dict[str, Any]) -> None:
         cloud_id = str(cloud_job["jobId"])
-        self._active_cloud_job_id = cloud_id
+        local_job: RenderJob | None = None
         try:
             raw_options = cloud_job.get("options") or {}
             options = RenderOptions.from_values(
@@ -142,11 +252,11 @@ class CloudRenderBridge:
                     raise ValueError("Cloud replay payload is missing")
                 replay = base64.b64decode(encoded, validate=True)
                 local_job = await self.manager.submit_replay(user_id, replay, options)
-            self._active_local_job = local_job
+            self._local_jobs[cloud_id] = local_job
             await self._monitor(cloud_id, local_job)
         except asyncio.CancelledError:
-            if self._active_local_job and self._active_local_job.status not in TERMINAL_STATUSES:
-                await self.manager.cancel(self._active_local_job.id)
+            if local_job and local_job.status not in TERMINAL_STATUSES:
+                await self.manager.cancel(local_job.id)
             raise
         except RenderError as exc:
             await self._patch(cloud_id, {
@@ -166,19 +276,14 @@ class CloudRenderBridge:
                 "error": str(exc)[:500],
             })
         finally:
-            self._active_cloud_job_id = None
-            self._active_local_job = None
+            self._local_jobs.pop(cloud_id, None)
 
     async def _monitor(self, cloud_id: str, local_job: RenderJob) -> None:
-        last_heartbeat = 0.0
         while local_job.status not in TERMINAL_STATUSES:
             try:
                 result = await self._patch_job_state(cloud_id, local_job)
                 if result.get("cancelRequested"):
                     await self.manager.cancel(local_job.id)
-                if time.monotonic() - last_heartbeat >= 10:
-                    await self._heartbeat_request()
-                    last_heartbeat = time.monotonic()
             except (httpx.HTTPError, OSError) as exc:
                 LOGGER.warning("cloud_job=%s progress report failed: %s", cloud_id, type(exc).__name__)
             await asyncio.sleep(2.5)
@@ -238,7 +343,7 @@ class CloudRenderBridge:
         return body if isinstance(body, dict) else {}
 
     async def _upload_with_lease(self, cloud_id: str, job: RenderJob) -> dict[str, Any]:
-        upload = asyncio.create_task(self._upload(job.output_path), name=f"video-upload-{cloud_id}")
+        upload = asyncio.create_task(self._upload(job), name=f"video-upload-{cloud_id}")
         try:
             while not upload.done():
                 try:
@@ -258,11 +363,10 @@ class CloudRenderBridge:
                 upload.cancel()
                 await asyncio.gather(upload, return_exceptions=True)
 
-    async def _upload(self, output: Path) -> dict[str, Any]:
-        local_job = self._active_local_job
-        if not local_job or local_job.output_path != output:
-            raise RuntimeError("Local render job is unavailable for upload")
-        result = await self.video_sharer.share(local_job.id, local_job.options)
+    async def _upload(self, job: RenderJob) -> dict[str, Any]:
+        if not job.output_path:
+            raise RuntimeError("Local render output is unavailable for upload")
+        result = await self.video_sharer.share(job.id, job.options)
         if not isinstance(result.get("url"), str) or not isinstance(result.get("size"), int):
             raise RuntimeError("Video uploader returned an invalid response")
         return result

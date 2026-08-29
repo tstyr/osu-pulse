@@ -80,6 +80,10 @@ class JobManager:
     def active_count(self) -> int:
         return sum(job.status in {JobStatus.RENDERING, JobStatus.ENCODING} for job in self.jobs.values())
 
+    @property
+    def inflight_count(self) -> int:
+        return sum(job.status not in TERMINAL_STATUSES for job in self.jobs.values())
+
     def get(self, job_id: str) -> RenderJob:
         job = self.jobs.get(job_id)
         if not job:

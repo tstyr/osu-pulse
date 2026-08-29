@@ -1,6 +1,6 @@
 # osu! pulse
 
-osu!の成長記録、Discordへのリザルト通知、毎日のDM、リマインダー、ポモドーロ、Lavalink音楽再生を一つにまとめたDiscord Bot + Webダッシュボードです。
+osu!の成長記録、Discordへのリザルト通知、毎日のDM、リマインダー、ポモドーロ、Lavalink音楽再生を一つにまとめたDiscord Bot + 非公開コントロールパネルです。
 
 - Web: https://osu-pulse.vercel.app
 - Repository: https://github.com/tstyr/osu-pulse
@@ -18,7 +18,8 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 ## 主な機能
 
 - `/osu link` で初回アカウント登録、4モード別のスナップショット保存
-- WebでPP・順位・精度・プレイ回数の推移と最近のリザルトを表示
+- キーフレーズで保護したWeb UIでRenderer、CPU/GPU、メモリ、ディスク、通信量、処理統計を確認
+- Web UIから既定解像度・FPS、圧縮、YouTube公開範囲、R2/osu!資格情報を管理
 - 設定チャンネルへ新規リザルトを自動投稿
 - 日次成長サマリーをDM送信
 - `/remind`、`/pomodoro` とVercel Workflowによる耐久タイマー
@@ -29,7 +30,21 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - Renderer完了後、判定・pp・精度・曲名を含むタイトルでYouTubeへ公開投稿（OAuth設定時）
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
 - 状況カテゴリは15秒ごとに再取得。YouTube未設定時のみ完成動画をCloudflare R2（未設定時はVercel Blob）へアップロード
-- Webの`/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成動画はYouTubeリンクで受け取る
+- Webの`/dashboard/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成動画はYouTubeリンクで受け取る
+- Rendererは設定に応じて最大2本を並列処理。既定は安定性を優先して1本
+
+## 非公開コントロールパネル
+
+`https://osu-pulse.vercel.app`は公開プロフィールを表示せず、管理キーフレーズのログイン画面だけを公開します。ログイン後は次の画面を利用できます。
+
+- **概要:** Renderer接続、14日間の処理本数、成功率、YouTube投稿数、CPU/GPU/RAM/ディスク/通信量、最近のジョブ
+- **レンダー:** Score URLまたは`.osr`からレンダーを依頼し、進捗確認・キャンセル・完成動画を開く
+- **設定:** 解像度/FPS、最大並列数、GPUエンコーダ、譜面取得、圧縮、YouTube、osu! API、R2を説明付きの折りたたみ項目で管理
+- **データベース:** Neon DB全体容量、テーブル別行数・データ容量・インデックス容量を読み取り専用で確認
+
+キーフレーズはVercelの`CONTROL_PANEL_KEYPHRASE`で指定します。未設定時は既存の`WEB_RENDER_ACCESS_KEY`を使用します。セッション署名とDB内資格情報の暗号化には`CONTROL_PANEL_SESSION_SECRET`を使い、未設定時は`INTERNAL_API_SECRET`へフォールバックします。秘密値は画面へ再表示せず、AES-256-GCMで暗号化して保存します。
+
+保存したRenderer設定は、外向きVercel Bridgeを通じて`renderer/.env`へ同期されます。実行中の処理がある場合は完了を待ち、`renderer/start_renderer.bat`が自動再起動して反映します。`RENDER_BRIDGE_TOKEN`、管理キーフレーズ、`DATABASE_URL`は接続喪失を防ぐためWeb UIから変更できません。
 
 ## ローカル起動
 
@@ -116,7 +131,7 @@ Discordのアップロード上限を超える動画は外部ストレージへ�
 renderer/.venv/Scripts/python.exe -m renderer.configure_r2 "https://ACCOUNT_ID.r2.cloudflarestorage.com/BUCKET"
 ```
 
-Webでは`https://osu-pulse.vercel.app/render`を開き、`outputs/render-access-key.txt`のキーを入力します。キーはブラウザの`sessionStorage`だけに保存されます。`.osr`はVercel Functionsのペイロード制限を考慮して3 MBまで、完成MP4は東京リージョンの公開Vercel Blobへ直接アップロードされます。保存期限は24時間で、日次Cronの次回実行時に削除されるため実際の保持は最大約48時間です。
+Webでは`https://osu-pulse.vercel.app`へ管理キーフレーズでログインし、`/dashboard/render`を開きます。ログインセッションはHttpOnly Cookieで管理し、レンダージョブのIDと一時トークンだけをバージョン付き`sessionStorage`へ保存します。`.osr`はVercel Functionsのペイロード制限を考慮して3 MBまでです。YouTube投稿を無効にした場合、完成MP4はR2（未設定時はVercel Blob）へアップロードします。
 
 ## 必須環境変数
 
@@ -129,7 +144,8 @@ Webでは`https://osu-pulse.vercel.app/render`を開き、`outputs/render-access
 - `WEB_APP_URL`
 - 音楽利用時は `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD`
 - ローカルRenderer利用時は `RENDER_SERVER_URL`, `RENDER_SERVER_TOKEN`
-- Web Renderer利用時は `WEB_RENDER_ACCESS_KEY`, `RENDER_BRIDGE_TOKEN`, `BLOB_READ_WRITE_TOKEN`, `RENDER_CLOUD_URL`
+- Web管理画面では `CONTROL_PANEL_KEYPHRASE`, `CONTROL_PANEL_SESSION_SECRET`（どちらも既存変数へのフォールバックあり）
+- Web Renderer利用時は `RENDER_BRIDGE_TOKEN`, `RENDER_CLOUD_URL` と、R2または `BLOB_READ_WRITE_TOKEN`
 
 秘密値はGitへコミットせず、Vercel環境変数とworker側のSecret Storeへ登録してください。
 

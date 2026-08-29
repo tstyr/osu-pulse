@@ -40,7 +40,7 @@ export async function sendDailyDigests() {
         embeds: [{
           title: `Daily growth · ${MODE_LABELS[mode]}`,
           description: ppGain || rankGain ? "今日も前進しています。小さな積み重ねを記録しました。" : "今日は基準値を保存しました。次のセッションで伸ばしていきましょう。",
-          url: `${appUrl}/u/${account.osuUserId}?mode=${mode}`,
+          url: `https://osu.ppy.sh/users/${account.osuUserId}/${mode}`,
           color: colorToInt(MODE_ACCENTS[mode]),
           thumbnail: account.avatarUrl ? { url: account.avatarUrl } : undefined,
           image: { url: `${appUrl}/api/charts/growth/${account.osuUserId}?mode=${mode}` },

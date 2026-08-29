@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,6 +150,41 @@ class JobQueueTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(runner.maximum_active, 1)
                 self.assertEqual(len(youtube.uploaded), 3)
                 self.assertTrue(all(job.youtube_privacy_status == "unlisted" for job in jobs))
+            finally:
+                await manager.stop()
+
+    async def test_two_render_workers_can_run_in_parallel(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = replace(test_settings(root), max_concurrent_renders=2)
+            settings.ensure_directories()
+            map_folder = settings.songs_path / "1 Test"
+            map_folder.mkdir()
+            map_content = b"osu file format v14\n[Metadata]\nBeatmapID:1\n"
+            (map_folder / "test.osu").write_bytes(map_content)
+            md5 = hashlib.md5(map_content, usedforsecurity=False).hexdigest()
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            runner = FakeRunner(settings.output_path)
+            manager = JobManager(  # type: ignore[arg-type]
+                settings,
+                FakeOsuApi(),
+                BeatmapResolver(index),
+                runner,
+            )
+            await manager.start()
+            try:
+                jobs = [
+                    await manager.submit_replay("100", replay_bytes(md5, replay_md5="5" * 32), RenderOptions()),
+                    await manager.submit_replay("200", replay_bytes(md5, replay_md5="6" * 32), RenderOptions()),
+                ]
+                deadline = asyncio.get_running_loop().time() + 5
+                while any(job.status not in {JobStatus.COMPLETED, JobStatus.FAILED} for job in jobs):
+                    if asyncio.get_running_loop().time() > deadline:
+                        self.fail("parallel render queue did not finish in time")
+                    await asyncio.sleep(0.01)
+                self.assertTrue(all(job.status == JobStatus.COMPLETED for job in jobs))
+                self.assertEqual(runner.maximum_active, 2)
             finally:
                 await manager.stop()
 

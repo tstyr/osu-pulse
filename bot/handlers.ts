@@ -43,6 +43,10 @@ function webUrl(path: string) {
   return `${(process.env.WEB_APP_URL ?? "http://localhost:3000").replace(/\/$/, "")}${path}`;
 }
 
+function osuProfileUrl(osuUserId: number, mode: OsuMode) {
+  return `https://osu.ppy.sh/users/${osuUserId}/${mode}`;
+}
+
 function modeFromOption(interaction: ChatInputCommandInteraction, fallback: OsuMode): OsuMode {
   const value = interaction.options.getString("mode");
   return isOsuMode(value) ? value : fallback;
@@ -93,10 +97,10 @@ async function handleOsu(interaction: ChatInputCommandInteraction) {
       embeds: [new EmbedBuilder()
         .setColor(0xff66aa)
         .setTitle(`${result.account.username} を登録しました`)
-        .setURL(webUrl(`/u/${result.account.osuUserId}?mode=${mode}`))
+        .setURL(osuProfileUrl(result.account.osuUserId, mode))
         .setDescription(`4モードのスナップショットを保存し、${result.importedScores}件の最近のリザルトを取り込みました。`)
         .setThumbnail(result.account.avatarUrl)
-        .addFields({ name: "メインモード", value: MODE_LABELS[mode], inline: true }, { name: "成長ページ", value: `[ダッシュボードを開く](${webUrl(`/u/${result.account.osuUserId}?mode=${mode}`)})`, inline: true })
+        .addFields({ name: "メインモード", value: MODE_LABELS[mode], inline: true }, { name: "osu!プロフィール", value: `[公式ページを開く](${osuProfileUrl(result.account.osuUserId, mode)})`, inline: true })
         .setFooter({ text: "以後の新しいリザルトを自動追跡します" })],
     });
     return;
@@ -129,7 +133,7 @@ async function handleOsu(interaction: ChatInputCommandInteraction) {
         .setColor(Number.parseInt(MODE_ACCENTS[mode].slice(1), 16))
         .setAuthor({ name: `${target.username} · ${MODE_LABELS[mode]}`, iconURL: target.displayAvatarURL() })
         .setTitle(account.username)
-        .setURL(webUrl(`/u/${account.osuUserId}?mode=${mode}`))
+        .setURL(osuProfileUrl(account.osuUserId, mode))
         .setThumbnail(account.avatarUrl)
         .addFields(
           { name: "Performance", value: `${formatNumber(latest.pp)} pp\n${ppGain >= 0 ? "+" : ""}${ppGain.toFixed(0)} today`, inline: true },
@@ -141,11 +145,11 @@ async function handleOsu(interaction: ChatInputCommandInteraction) {
   } else if (subcommand === "recent") {
     const plays = await getRecentPlays(account.id, mode, 8);
     const lines = plays.map((play, index) => `${index + 1}. **${play.rank} · ${play.pp ? `${play.pp.toFixed(1)}pp` : "—"}** — ${play.artist} · ${play.title} [${play.difficulty}]\n   ${formatScoreAccuracy(play.accuracy)}${play.mods.length ? ` · +${play.mods.join("")}` : ""}`);
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x8c7cff).setTitle(`${account.username} · recent ${MODE_LABELS[mode]}`).setDescription(lines.join("\n") || "まだリザルトがありません。").setURL(webUrl(`/u/${account.osuUserId}?mode=${mode}`))] });
+    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x8c7cff).setTitle(`${account.username} · recent ${MODE_LABELS[mode]}`).setDescription(lines.join("\n") || "まだリザルトがありません。").setURL(osuProfileUrl(account.osuUserId, mode))] });
   } else if (subcommand === "growth") {
     const history = await getGrowthHistory(account.id, mode, 30);
     const gain = history.length > 1 ? history.at(-1)!.pp - history[0].pp : 0;
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff66aa).setTitle(`${account.username} · 30日成長`).setDescription(`${gain >= 0 ? "+" : ""}${gain.toFixed(0)} pp · ${MODE_LABELS[mode]}`).setURL(webUrl(`/u/${account.osuUserId}?mode=${mode}`)).setImage(webUrl(`/api/charts/growth/${account.osuUserId}?mode=${mode}`))] });
+    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff66aa).setTitle(`${account.username} · 30日成長`).setDescription(`${gain >= 0 ? "+" : ""}${gain.toFixed(0)} pp · ${MODE_LABELS[mode]}`).setURL(osuProfileUrl(account.osuUserId, mode)).setImage(webUrl(`/api/charts/growth/${account.osuUserId}?mode=${mode}`))] });
   }
 }
 

@@ -162,6 +162,7 @@ class Settings:
     youtube_delete_after_upload: bool = False
     youtube_upload_registry_path: Path = RENDERER_ROOT / "youtube-uploads.json"
     r2_delete_script: Path = RENDERER_ROOT / "delete_r2_video.mjs"
+    control_panel_config_version: int = 0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -184,7 +185,7 @@ class Settings:
             output_path=_path_env("OUTPUT_PATH", RENDERER_ROOT / "output"),
             log_path=_path_env("LOG_PATH", RENDERER_ROOT / "logs"),
             beatmap_index_path=_path_env("BEATMAP_INDEX_PATH", RENDERER_ROOT / "beatmap-index.json"),
-            max_concurrent_renders=_int_env("MAX_CONCURRENT_RENDERS", 1),
+            max_concurrent_renders=_bounded_int_env("MAX_CONCURRENT_RENDERS", 1, minimum=1, maximum=2),
             max_jobs_per_user=_int_env("MAX_JOBS_PER_USER", 2),
             max_replay_bytes=_int_env("MAX_REPLAY_BYTES", 16 * 1024 * 1024),
             render_timeout_seconds=_int_env("RENDER_TIMEOUT_SECONDS", 1800),
@@ -227,6 +228,7 @@ class Settings:
             youtube_delete_after_upload=_bool_env("YOUTUBE_DELETE_AFTER_UPLOAD", False),
             youtube_upload_registry_path=_path_env("YOUTUBE_UPLOAD_REGISTRY_PATH", RENDERER_ROOT / "youtube-uploads.json"),
             r2_delete_script=(RENDERER_ROOT / "delete_r2_video.mjs").resolve(),
+            control_panel_config_version=_int_env("CONTROL_PANEL_CONFIG_VERSION", 0, minimum=0),
         )
 
     def ensure_directories(self) -> None:

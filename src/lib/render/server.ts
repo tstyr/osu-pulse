@@ -6,6 +6,7 @@ import { and, asc, count, eq, inArray, lt, or } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDb } from "@/db";
+import { hasControlPanelSession } from "@/lib/control/auth";
 import {
   cloudRendererState,
   cloudRenderJobs,
@@ -59,7 +60,8 @@ function safeEqual(left: string, right: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function requireWebRenderAccess(request: Request) {
+export async function requireWebRenderAccess(request: Request) {
+  if (await hasControlPanelSession()) return;
   const expected = process.env.WEB_RENDER_ACCESS_KEY;
   const supplied = request.headers.get("authorization") ?? "";
   if (!expected || !supplied.startsWith("Bearer ") || !safeEqual(supplied.slice(7), expected)) {
@@ -171,6 +173,8 @@ export async function heartbeatRenderer(input: {
   activeCloudJobId?: string | null;
   dependencies: Record<string, unknown>;
   version?: string;
+  configurationVersion?: number;
+  restartRequired?: boolean;
 }) {
   const now = new Date();
   const values = {
@@ -181,6 +185,8 @@ export async function heartbeatRenderer(input: {
     activeCloudJobId: input.activeCloudJobId ?? null,
     dependencies: input.dependencies,
     version: input.version?.slice(0, 64),
+    configurationVersion: input.configurationVersion ?? 0,
+    restartRequired: input.restartRequired ?? false,
     lastSeenAt: now,
     updatedAt: now,
   };
@@ -300,6 +306,8 @@ export async function rendererStatus() {
     queueSize: pending?.value ?? 0,
     localQueueSize: online ? renderer!.queueSize : 0,
     dependencies: online ? renderer!.dependencies : {},
+    configurationVersion: online ? renderer!.configurationVersion : 0,
+    restartRequired: online ? renderer!.restartRequired : false,
     lastSeenAt: renderer?.lastSeenAt.toISOString() ?? null,
   };
 }

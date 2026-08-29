@@ -84,8 +84,14 @@ if /i "%~1"=="--check" (
 )
 
 set "PYTHONUTF8=1"
+:run_renderer
 "%RENDERER_VENV%\Scripts\python.exe" -m renderer.server
 set "RENDERER_EXIT_CODE=%ERRORLEVEL%"
+if "%RENDERER_EXIT_CODE%"=="75" (
+    echo [INFO] Control-panel settings updated. Restarting Renderer...
+    timeout /t 2 /nobreak >nul
+    goto :run_renderer
+)
 goto :stopped
 
 :failed

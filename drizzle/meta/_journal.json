@@ -43,6 +43,13 @@
       "when": 1787916546928,
       "tag": "0005_true_tana_nile",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787976319326,
+      "tag": "0006_fearless_the_fallen",
+      "breakpoints": true
     }
   ]
 }

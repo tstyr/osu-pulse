@@ -78,7 +78,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             youtube_uploader,
         )
         await manager.start()
-        cloud_bridge = CloudRenderBridge(settings, manager, dependencies, video_sharer)
+        cloud_bridge = CloudRenderBridge(settings, manager, dependencies, video_sharer, metrics)
         await cloud_bridge.start()
         app.state.settings = settings
         app.state.dependencies = dependencies

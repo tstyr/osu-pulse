@@ -331,7 +331,79 @@ export const cloudRendererState = pgTable("cloud_renderer_state", {
   activeCloudJobId: uuid("active_cloud_job_id"),
   dependencies: jsonb("dependencies").$type<Record<string, unknown>>().notNull().default({}),
   version: text("version"),
+  configurationVersion: integer("configuration_version").notNull().default(0),
+  restartRequired: boolean("restart_required").notNull().default(false),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ControlPanelSettingsValue = {
+  renderDefaults: {
+    resolution: CloudRenderOptions["resolution"];
+    fps: CloudRenderOptions["fps"];
+    speed: CloudRenderOptions["speed"];
+    motionBlur: boolean;
+  };
+  renderer: {
+    maxConcurrentRenders: 1 | 2;
+    renderTimeoutSeconds: number;
+    outputRetentionHours: number;
+    videoEncoder: "auto" | "h264_nvenc" | "h264_amf" | "libx264";
+    autoDownloadBeatmaps: boolean;
+    beatmapDownloadNoVideo: boolean;
+    videoCompress: boolean;
+    videoCompressQuality: number;
+    videoCompressAudioKbps: number;
+  };
+  youtube: {
+    autoUpload: boolean;
+    privacyStatus: "private" | "unlisted" | "public";
+    deleteAfterUpload: boolean;
+    categoryId: string;
+  };
+  storage: {
+    r2Endpoint: string;
+    r2Bucket: string;
+  };
+};
+
+export type ControlPanelSecretName =
+  | "OSU_CLIENT_ID"
+  | "OSU_CLIENT_SECRET"
+  | "YOUTUBE_CLIENT_ID"
+  | "YOUTUBE_CLIENT_SECRET"
+  | "YOUTUBE_REFRESH_TOKEN"
+  | "R2_ACCESS_KEY_ID"
+  | "R2_SECRET_ACCESS_KEY";
+
+export const controlPanelSettings = pgTable("control_panel_settings", {
+  id: text("id").primaryKey(),
+  version: integer("version").notNull().default(1),
+  values: jsonb("values").$type<ControlPanelSettingsValue>().notNull(),
+  encryptedSecrets: jsonb("encrypted_secrets")
+    .$type<Partial<Record<ControlPanelSecretName, string>>>()
+    .notNull()
+    .default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const controlPanelSessions = pgTable(
+  "control_panel_sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_panel_sessions_expiry_idx").on(table.expiresAt)],
+);
+
+export const controlPanelLoginAttempts = pgTable("control_panel_login_attempts", {
+  fingerprintHash: text("fingerprint_hash").primaryKey(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -344,3 +416,5 @@ export type Reminder = typeof reminders.$inferSelect;
 export type FocusSession = typeof focusSessions.$inferSelect;
 export type CloudRenderJob = typeof cloudRenderJobs.$inferSelect;
 export type CloudRendererState = typeof cloudRendererState.$inferSelect;
+export type ControlPanelSettings = typeof controlPanelSettings.$inferSelect;
+export type ControlPanelSession = typeof controlPanelSessions.$inferSelect;

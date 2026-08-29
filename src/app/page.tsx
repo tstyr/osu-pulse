@@ -1,23 +1,25 @@
-import { ProfileDashboard } from "@/components/profile-dashboard";
-import { demoGrowth, demoModeStats, demoProfile, demoRecentPlays } from "@/lib/demo-data";
-import { isOsuMode } from "@/lib/osu/modes";
+import { redirect } from "next/navigation";
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ mode?: string }> }) {
-  const query = await searchParams;
-  const mode = isOsuMode(query.mode) ? query.mode : "osu";
-  const stats = demoModeStats(mode);
+import { ControlLogo } from "@/components/control-panel/control-logo";
+import { LoginForm } from "@/components/control-panel/login-form";
+import { hasControlPanelSession } from "@/lib/control/auth";
 
+export default async function LoginPage() {
+  if (await hasControlPanelSession()) redirect("/dashboard");
   return (
-    <ProfileDashboard
-      profile={demoProfile}
-      mode={mode}
-      stats={{ pp: stats.pp, globalRank: stats.rank, countryRank: stats.countryRank, accuracy: stats.accuracy, playCount: stats.plays, level: 108.42 }}
-      previous={{ pp: stats.pp - 42, globalRank: stats.rank + 117, countryRank: stats.countryRank + 5, accuracy: stats.accuracy - 0.04, playCount: stats.plays - 36 }}
-      growth={demoGrowth(mode)}
-      recent={demoRecentPlays}
-      modeScoreCounts={{ osu: 328, taiko: 104, fruits: 82, mania: 191 }}
-      profileHref="/"
-      demo
-    />
+    <main className="grid min-h-screen place-items-center px-4 py-10">
+      <section className="w-full max-w-[430px]">
+        <div className="mb-8 flex justify-center"><ControlLogo large /></div>
+        <div className="cp-panel overflow-hidden">
+          <div className="border-b border-[#e2e6ec] px-7 py-6">
+            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#f48120]">Private control plane</p>
+            <h1 className="mt-2 text-[23px] font-semibold tracking-[-0.025em]">管理コンソールへログイン</h1>
+            <p className="mt-2 text-sm leading-6 text-[#697386]">レンダー、YouTube、DB、ローカルPCの状態を1か所で管理します。</p>
+          </div>
+          <div className="px-7 py-6"><LoginForm /></div>
+        </div>
+        <p className="mt-5 text-center text-[11px] leading-5 text-[#7d8795]">Discord Botの操作には影響しません。キーフレーズはサーバー側だけで照合されます。</p>
+      </section>
+    </main>
   );
 }
