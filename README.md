@@ -56,6 +56,8 @@ start_osu_pulse.bat --check
 
 Botだけ起動する場合は`bot/start_bot.bat`、Rendererだけ起動する場合は`renderer/start_renderer.bat`、音楽ノードだけ起動する場合は`lavalink/start_lavalink.bat`を使います。初回のLavalink起動時は公式Lavalink 4.2.2 JAR（約100 MB）をダウンロードし、SHA-256を検証します。Java 17以上が必要です。初回セットアップやWeb開発サーバーの起動は以下のコマンドを使います。
 
+Windowsへのサインイン時に3サービスを非表示で自動起動する場合は、`install_autostart.bat`を一度実行します。既に動いているサービスは重複起動せず、起動記録は`work/autostart.log`へ保存します。解除は`install_autostart.bat -Remove`です。
+
 ```bash
 npm install
 copy .env.example .env.local
