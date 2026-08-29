@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $rendererRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $rendererRoot
 $sourcePath = Join-Path $rendererRoot "local\osu-mania-renderer"
+$hudPatch = Join-Path $rendererRoot "mania-hud.patch"
 $venvPath = Join-Path $rendererRoot ".venv-mania"
 $pythonPath = Join-Path $venvPath "Scripts\python.exe"
 $commit = "361ed13bb618b9986b72ee7b5d313a02c59fa1aa"
@@ -27,6 +28,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourcePath ".git") -PathType Contai
 $currentCommit = (& git -C $sourcePath rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $currentCommit -ne $commit) {
     throw "Unexpected osu!mania renderer revision. Expected $commit but found $currentCommit."
+}
+
+if (Test-Path -LiteralPath $hudPatch -PathType Leaf) {
+    & git -C $sourcePath apply --check $hudPatch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $sourcePath apply $hudPatch
+        if ($LASTEXITCODE -ne 0) { throw "Could not apply the osu! Pulse mania HUD patch." }
+    } else {
+        & git -C $sourcePath apply --reverse --check $hudPatch 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "The osu!mania source does not match the managed HUD patch." }
+    }
 }
 
 if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {

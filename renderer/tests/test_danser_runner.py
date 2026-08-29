@@ -32,6 +32,9 @@ class DanserProgressTests(unittest.TestCase):
             output_path=Path("C:/output"),
             danser_path=Path("C:/danser/danser-cli.exe"),
             danser_settings="default",
+            standard_background_parallax=False,
+            standard_key_overlay=True,
+            standard_key_overlay_scale=1.2,
         )
         job = RenderJob("job", "user", "replay", "source", RenderOptions(), metadata=ScoreMetadata(ruleset="osu"))
         command = DanserRunner(settings, DependencyState())._command(job, Path("C:/replay.osr"), "libx264")
@@ -39,3 +42,6 @@ class DanserProgressTests(unittest.TestCase):
         patch = json.loads(next(value.removeprefix("-sPatch=") for value in command if value.startswith("-sPatch=")))
         self.assertEqual(patch["General"]["OsuSkinsDir"], "C:\\osu\\Skins")
         self.assertEqual(patch["Skin"]["CurrentSkin"], "osu-pulse Appu")
+        self.assertFalse(patch["Playfield"]["Background"]["Parallax"]["Enabled"])
+        self.assertTrue(patch["Gameplay"]["KeyOverlay"]["Show"])
+        self.assertEqual(patch["Gameplay"]["KeyOverlay"]["Scale"], 1.2)

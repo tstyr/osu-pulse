@@ -38,6 +38,17 @@ def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> 
     return value
 
 
+def _bounded_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def _youtube_privacy_status() -> str:
     value = os.getenv("YOUTUBE_PRIVACY_STATUS", "unlisted").strip().lower()
     if value not in {"private", "unlisted", "public"}:
@@ -133,6 +144,13 @@ class Settings:
     mania_python_path: Path | None = RENDERER_ROOT / ".venv-mania" / "Scripts" / "python.exe"
     mania_source_path: Path = RENDERER_ROOT / "local" / "osu-mania-renderer"
     mania_entrypoint_path: Path = RENDERER_ROOT / "mania_cli.py"
+    mania_scroll_speed: int = 30
+    mania_judgment_scale: float = 0.58
+    mania_score_scale: float = 1.35
+    mania_combo_scale: float = 1.35
+    standard_background_parallax: bool = False
+    standard_key_overlay: bool = True
+    standard_key_overlay_scale: float = 1.0
     cloud_url: str | None = None
     cloud_bridge_token: str | None = None
     blob_token: str | None = None
@@ -199,6 +217,13 @@ class Settings:
             mania_python_path=_executable_env("MANIA_PYTHON_PATH", str(RENDERER_ROOT / ".venv-mania" / "Scripts" / "python.exe")),
             mania_source_path=_path_env("MANIA_RENDERER_SOURCE", RENDERER_ROOT / "local" / "osu-mania-renderer"),
             mania_entrypoint_path=(RENDERER_ROOT / "mania_cli.py").resolve(),
+            mania_scroll_speed=_bounded_int_env("MANIA_SCROLL_SPEED", 30, minimum=1, maximum=40),
+            mania_judgment_scale=_bounded_float_env("MANIA_JUDGMENT_SCALE", 0.58, minimum=0.25, maximum=1.5),
+            mania_score_scale=_bounded_float_env("MANIA_SCORE_SCALE", 1.35, minimum=0.5, maximum=2.5),
+            mania_combo_scale=_bounded_float_env("MANIA_COMBO_SCALE", 1.35, minimum=0.5, maximum=2.5),
+            standard_background_parallax=_bool_env("STD_BACKGROUND_PARALLAX", False),
+            standard_key_overlay=_bool_env("STD_KEY_OVERLAY", True),
+            standard_key_overlay_scale=_bounded_float_env("STD_KEY_OVERLAY_SCALE", 1.0, minimum=0.5, maximum=2.0),
             cloud_url=_cloud_url(),
             cloud_bridge_token=os.getenv("RENDER_BRIDGE_TOKEN") or None,
             blob_token=os.getenv("BLOB_READ_WRITE_TOKEN") or None,

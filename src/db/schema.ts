@@ -337,6 +337,38 @@ export const cloudRendererState = pgTable("cloud_renderer_state", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export type RenderVideoCleanup = {
+  r2_deleted?: boolean;
+  local_deleted?: boolean;
+  errors?: string[];
+  updated_at?: string;
+};
+
+export const renderVideos = pgTable(
+  "render_videos",
+  {
+    videoId: text("video_id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    url: text("url").notNull(),
+    title: text("title").notNull(),
+    privacyStatus: text("privacy_status").notNull().default("public"),
+    scoreId: bigint("score_id", { mode: "number" }),
+    sourceSize: bigint("source_size", { mode: "number" }).notNull().default(0),
+    cleanup: jsonb("cleanup").$type<RenderVideoCleanup>(),
+    status: text("status").notNull().default("active"),
+    deleteRequested: boolean("delete_requested").notNull().default(false),
+    deleteError: text("delete_error"),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("render_videos_uploaded_idx").on(table.uploadedAt),
+    index("render_videos_delete_idx").on(table.deleteRequested, table.updatedAt),
+  ],
+);
+
 export type ControlPanelSettingsValue = {
   renderDefaults: {
     resolution: CloudRenderOptions["resolution"];
@@ -354,6 +386,15 @@ export type ControlPanelSettingsValue = {
     videoCompress: boolean;
     videoCompressQuality: number;
     videoCompressAudioKbps: number;
+  };
+  appearance: {
+    maniaScrollSpeed: number;
+    maniaJudgmentScale: number;
+    maniaScoreScale: number;
+    maniaComboScale: number;
+    standardBackgroundParallax: boolean;
+    standardKeyOverlay: boolean;
+    standardKeyOverlayScale: number;
   };
   youtube: {
     autoUpload: boolean;
@@ -416,5 +457,6 @@ export type Reminder = typeof reminders.$inferSelect;
 export type FocusSession = typeof focusSessions.$inferSelect;
 export type CloudRenderJob = typeof cloudRenderJobs.$inferSelect;
 export type CloudRendererState = typeof cloudRendererState.$inferSelect;
+export type RenderVideo = typeof renderVideos.$inferSelect;
 export type ControlPanelSettings = typeof controlPanelSettings.$inferSelect;
 export type ControlPanelSession = typeof controlPanelSessions.$inferSelect;

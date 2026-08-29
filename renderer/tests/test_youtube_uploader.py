@@ -29,6 +29,26 @@ class YouTubeTitleTests(unittest.TestCase):
 
 
 class YouTubeUploaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deletes_video_with_refreshed_oauth_token(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, str(request.url)))
+            if request.url.host == "oauth2.googleapis.com":
+                return httpx.Response(200, json={"access_token": "access-token"})
+            self.assertEqual(request.headers["authorization"], "Bearer access-token")
+            return httpx.Response(204)
+
+        settings = SimpleNamespace(
+            youtube_auto_upload=True,
+            youtube_client_id="client-id",
+            youtube_client_secret="client-secret",
+            youtube_refresh_token="refresh-token",
+        )
+        uploader = YouTubeUploader(settings, transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+        await uploader.delete_video("abc123XYZ")
+        self.assertEqual([method for method, _ in calls], ["POST", "DELETE"])
+
     async def test_refreshes_oauth_and_uses_resumable_unlisted_upload(self) -> None:
         calls: list[tuple[str, str]] = []
         request_body: dict[str, object] = {}

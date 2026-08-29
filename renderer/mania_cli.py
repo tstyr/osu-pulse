@@ -18,6 +18,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--encoder", choices=("h264_nvenc", "h264_amf", "libx264"), default="libx264")
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--scroll-speed", type=int, default=30)
+    parser.add_argument("--judgment-scale", type=float, default=0.58)
+    parser.add_argument("--score-scale", type=float, default=1.35)
+    parser.add_argument("--combo-scale", type=float, default=1.35)
     parser.add_argument("--probe", action="store_true")
     return parser
 
@@ -62,6 +66,10 @@ async def _render(args: argparse.Namespace, RenderOptions, render_mania) -> None
         fps=args.fps,
         encoder=args.encoder,
         timeout_seconds=args.timeout,
+        scroll_speed=max(1, min(40, args.scroll_speed)),
+        judgment_scale=max(0.25, min(1.5, args.judgment_scale)),
+        score_scale=max(0.5, min(2.5, args.score_scale)),
+        combo_scale=max(0.5, min(2.5, args.combo_scale)),
     )
 
     async def progress(fraction: float) -> None:

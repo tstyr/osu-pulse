@@ -142,6 +142,22 @@ class DanserRunner:
                     "GaussWeightsMult": 1.5,
                 },
             },
+            "Playfield": {
+                "Background": {
+                    "Parallax": {
+                        "Enabled": bool(getattr(self.settings, "standard_background_parallax", False)),
+                    },
+                },
+            },
+            "Gameplay": {
+                "KeyOverlay": {
+                    "Show": bool(getattr(self.settings, "standard_key_overlay", True)),
+                    "Scale": float(getattr(self.settings, "standard_key_overlay_scale", 1.0)),
+                    "Opacity": 1,
+                    "XOffset": 0,
+                    "YOffset": 0,
+                },
+            },
         }
         command = [
             str(self.settings.danser_path),
@@ -179,6 +195,10 @@ class DanserRunner:
             "--fps", str(job.options.fps),
             "--encoder", encoder,
             "--timeout", str(self.settings.render_timeout_seconds),
+            "--scroll-speed", str(self.settings.mania_scroll_speed),
+            "--judgment-scale", str(self.settings.mania_judgment_scale),
+            "--score-scale", str(self.settings.mania_score_scale),
+            "--combo-scale", str(self.settings.mania_combo_scale),
         ]
 
     async def _run_mania_once(self, job: RenderJob, replay_path: Path, encoder: str) -> tuple[int, list[str]]:

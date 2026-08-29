@@ -50,6 +50,13 @@
       "when": 1787976319326,
       "tag": "0006_fearless_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787979412238,
+      "tag": "0007_high_the_liberteens",
+      "breakpoints": true
     }
   ]
 }

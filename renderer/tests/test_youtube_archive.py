@@ -25,3 +25,10 @@ class YouTubeArchiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(recorded["video_id"], "abc123XYZ")  # type: ignore[index]
             self.assertEqual(recorded["privacy_status"], "public")  # type: ignore[index]
             self.assertEqual(recorded["source_size"], 4567)  # type: ignore[index]
+            cloud = archive.cloud_entries()
+            self.assertEqual(cloud[0]["videoId"], "abc123XYZ")
+            self.assertEqual(archive.job_id_for_video("abc123XYZ"), job_id)
+
+            await archive.mark_deleted(job_id)
+            deleted = archive.cloud_entries()[0]
+            self.assertIsInstance(deleted["deletedAt"], str)

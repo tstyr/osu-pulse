@@ -39,6 +39,15 @@ export async function saveSettings(
       videoCompressQuality: formData.get("videoCompressQuality"),
       videoCompressAudioKbps: formData.get("videoCompressAudioKbps"),
     },
+    appearance: {
+      maniaScrollSpeed: formData.get("maniaScrollSpeed"),
+      maniaJudgmentScale: formData.get("maniaJudgmentScale"),
+      maniaScoreScale: formData.get("maniaScoreScale"),
+      maniaComboScale: formData.get("maniaComboScale"),
+      standardBackgroundParallax: checked(formData, "standardBackgroundParallax"),
+      standardKeyOverlay: checked(formData, "standardKeyOverlay"),
+      standardKeyOverlayScale: formData.get("standardKeyOverlayScale"),
+    },
     youtube: {
       autoUpload: checked(formData, "youtubeAutoUpload"),
       privacyStatus: formData.get("youtubePrivacyStatus"),

@@ -68,6 +68,21 @@ export function SettingsForm({ initial }: { initial: InitialSettings }) {
           </div>
         </Disclosure>
 
+        <Disclosure title="ゲーム内表示・HUD" description="mania 4Kの速度と文字サイズ、standardの背景移動と右下キー入力表示を調整します。">
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-[11px] leading-5 text-blue-800">mania 4Kのスクロール速度は30を基準に固定しています。判定だけ小さくし、スコアとコンボは読みやすい大きさへ拡大しています。</div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <label className="cp-label">mania 4K速度 <EnvTag>MANIA_SCROLL_SPEED</EnvTag><input name="maniaScrollSpeed" type="number" min="1" max="40" defaultValue={values.appearance.maniaScrollSpeed} className="cp-input" /><span className="mt-1.5 block text-[10px] font-normal text-[#828b98]">30が現在の固定値です。</span></label>
+            <label className="cp-label">判定サイズ <EnvTag>MANIA_JUDGMENT_SCALE</EnvTag><input name="maniaJudgmentScale" type="number" min="0.25" max="1.5" step="0.05" defaultValue={values.appearance.maniaJudgmentScale} className="cp-input" /><span className="mt-1.5 block text-[10px] font-normal text-[#828b98]">0.58でPERFECT/GREAT等を約42%小さくします。</span></label>
+            <label className="cp-label">スコアサイズ <EnvTag>MANIA_SCORE_SCALE</EnvTag><input name="maniaScoreScale" type="number" min="0.5" max="2.5" step="0.05" defaultValue={values.appearance.maniaScoreScale} className="cp-input" /></label>
+            <label className="cp-label">コンボサイズ <EnvTag>MANIA_COMBO_SCALE</EnvTag><input name="maniaComboScale" type="number" min="0.5" max="2.5" step="0.05" defaultValue={values.appearance.maniaComboScale} className="cp-input" /></label>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <Toggle name="standardBackgroundParallax" defaultChecked={values.appearance.standardBackgroundParallax} label="std背景の揺れを有効化" env="STD_BACKGROUND_PARALLAX" description="OFFなら背景のパララックス移動を止めます。現在はOFFです。" />
+            <Toggle name="standardKeyOverlay" defaultChecked={values.appearance.standardKeyOverlay} label="右下キー入力表示" env="STD_KEY_OVERLAY" description="std動画の右下にクリック入力（Z/X）の状態を表示します。" />
+          </div>
+          <div className="mt-4 max-w-sm"><label className="cp-label">右下入力表示の倍率 <EnvTag>STD_KEY_OVERLAY_SCALE</EnvTag><input name="standardKeyOverlayScale" type="number" min="0.5" max="2" step="0.1" defaultValue={values.appearance.standardKeyOverlayScale} className="cp-input" /></label></div>
+        </Disclosure>
+
         <Disclosure title="Rendererエンジン" description="ローカルPCの処理数、エンコーダー、タイムアウトを変更します。保存後にRendererが安全に再起動します。">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <label className="cp-label">同時レンダー数 <EnvTag>MAX_CONCURRENT_RENDERS</EnvTag><select name="maxConcurrentRenders" defaultValue={String(values.renderer.maxConcurrentRenders)} className="cp-select"><option value="1">1本（推奨）</option><option value="2">2本</option></select><span className="mt-1.5 block text-[10px] font-normal leading-4 text-[#828b98]">2本はAMF/GPU、RAM、ディスクI/Oを同時に使います。重い場合は1へ戻してください。</span></label>

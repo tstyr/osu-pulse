@@ -1,12 +1,13 @@
 "use client";
 
-import { BarChart3, Clapperboard, Database, Settings2 } from "lucide-react";
+import { BarChart3, Clapperboard, Database, Settings2, Video } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const items = [
   { href: "/dashboard", label: "概要", icon: BarChart3 },
   { href: "/dashboard/render", label: "レンダー", icon: Clapperboard },
+  { href: "/dashboard/videos", label: "動画", icon: Video },
   { href: "/dashboard/settings", label: "設定", icon: Settings2 },
   { href: "/dashboard/database", label: "データベース", icon: Database },
 ];

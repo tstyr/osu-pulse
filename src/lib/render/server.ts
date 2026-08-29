@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { and, asc, count, eq, inArray, lt, or } from "drizzle-orm";
+import { and, asc, count, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDb } from "@/db";
@@ -10,6 +10,7 @@ import { hasControlPanelSession } from "@/lib/control/auth";
 import {
   cloudRendererState,
   cloudRenderJobs,
+  renderVideos,
   type CloudRenderJob,
   type CloudRenderMetadata,
   type CloudRenderOptions,
@@ -52,6 +53,24 @@ export const bridgeUpdateSchema = z.object({
   error: z.string().max(500).nullable().optional(),
   videoUrl: z.string().url().max(2_000).nullable().optional(),
   videoSize: z.number().int().nonnegative().safe().nullable().optional(),
+});
+
+export const renderVideoSyncSchema = z.object({
+  videoId: z.string().regex(/^[A-Za-z0-9_-]{6,32}$/),
+  jobId: z.string().regex(/^[0-9a-f]{32}$/),
+  url: z.string().url().max(2_000),
+  title: z.string().min(1).max(100),
+  privacyStatus: z.enum(["private", "unlisted", "public"]),
+  scoreId: z.number().int().nonnegative().safe().nullable().optional(),
+  sourceSize: z.number().int().nonnegative().safe(),
+  uploadedAt: z.string().datetime({ offset: true }),
+  cleanup: z.object({
+    r2_deleted: z.boolean().optional(),
+    local_deleted: z.boolean().optional(),
+    errors: z.array(z.string().max(300)).max(10).optional(),
+    updated_at: z.string().datetime({ offset: true }).optional(),
+  }).nullable().optional(),
+  deletedAt: z.string().datetime({ offset: true }).nullable().optional(),
 });
 
 function safeEqual(left: string, right: string) {
@@ -194,6 +213,64 @@ export async function heartbeatRenderer(input: {
     target: cloudRendererState.id,
     set: values,
   });
+}
+
+export async function syncRenderVideos(inputs: z.infer<typeof renderVideoSyncSchema>[]) {
+  if (!inputs.length) return;
+  const db = getDb();
+  const now = new Date();
+  const values = inputs.map((input) => ({
+      videoId: input.videoId,
+      jobId: input.jobId,
+      url: input.url,
+      title: input.title,
+      privacyStatus: input.privacyStatus,
+      scoreId: input.scoreId ?? null,
+      sourceSize: input.sourceSize,
+      cleanup: input.cleanup ?? null,
+      uploadedAt: new Date(input.uploadedAt),
+      lastSyncedAt: now,
+      updatedAt: now,
+      status: input.deletedAt ? "deleted" : "active",
+      deletedAt: input.deletedAt ? new Date(input.deletedAt) : null,
+  }));
+  await db.insert(renderVideos).values(values).onConflictDoUpdate({
+    target: renderVideos.videoId,
+    set: {
+      jobId: sql`excluded.job_id`,
+      url: sql`excluded.url`,
+      title: sql`excluded.title`,
+      privacyStatus: sql`excluded.privacy_status`,
+      scoreId: sql`excluded.score_id`,
+      sourceSize: sql`excluded.source_size`,
+      cleanup: sql`excluded.cleanup`,
+      uploadedAt: sql`excluded.uploaded_at`,
+      lastSyncedAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+export async function pendingRenderVideoCommand() {
+  const video = await getDb().query.renderVideos.findFirst({
+    where: and(eq(renderVideos.deleteRequested, true), eq(renderVideos.status, "delete_requested")),
+    orderBy: asc(renderVideos.updatedAt),
+    columns: { videoId: true },
+  });
+  return video ? { type: "delete" as const, videoId: video.videoId } : null;
+}
+
+export async function completeRenderVideoCommand(videoId: string, success: boolean, error?: string | null) {
+  const now = new Date();
+  const [updated] = await getDb().update(renderVideos).set({
+    status: success ? "deleted" : "delete_failed",
+    deleteRequested: false,
+    deleteError: success ? null : (error || "YouTube動画の削除に失敗しました").slice(0, 500),
+    deletedAt: success ? now : null,
+    updatedAt: now,
+  }).where(eq(renderVideos.videoId, videoId)).returning({ videoId: renderVideos.videoId });
+  if (!updated) throw new RenderApiError("VIDEO_NOT_FOUND", "Video was not found.", 404);
+  return updated;
 }
 
 export async function claimCloudRenderJob(rendererId: string) {

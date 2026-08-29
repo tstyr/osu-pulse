@@ -8,6 +8,7 @@ import {
   cloudRenderJobs,
   discordAccountLinks,
   guildSettings,
+  renderVideos,
 } from "@/db/schema";
 import { rendererStatus } from "@/lib/render/server";
 
@@ -56,7 +57,7 @@ export async function getDashboardOverview() {
     db.select({ value: count() }).from(cloudRenderJobs).where(eq(cloudRenderJobs.status, "completed")),
     db.select({ value: count() }).from(cloudRenderJobs).where(eq(cloudRenderJobs.status, "failed")),
     db.select({ value: count() }).from(cloudRenderJobs).where(inArray(cloudRenderJobs.status, [...ACTIVE_RENDER_STATUSES])),
-    db.select({ value: count() }).from(cloudRenderJobs).where(sql`${cloudRenderJobs.videoUrl} like 'https://youtu.be/%'`),
+    db.select({ value: count() }).from(renderVideos).where(eq(renderVideos.status, "active")),
     db.select({ value: count() }).from(accounts),
     db.select({ value: count() }).from(discordAccountLinks),
     db.select({ value: count() }).from(guildSettings),

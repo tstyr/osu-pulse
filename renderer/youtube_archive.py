@@ -37,6 +37,48 @@ class YouTubeArchive:
         value = self.entries().get(job_id)
         return value if isinstance(value, dict) else None
 
+    def cloud_entries(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for job_id, entry in self.entries().items():
+            if not isinstance(entry, dict):
+                continue
+            video_id = entry.get("video_id")
+            uploaded_at = entry.get("uploaded_at")
+            if not isinstance(video_id, str) or not isinstance(uploaded_at, str):
+                continue
+            rows.append({
+                "videoId": video_id,
+                "jobId": job_id,
+                "url": entry.get("url") or f"https://youtu.be/{video_id}",
+                "title": entry.get("title") or "osu! replay",
+                "privacyStatus": entry.get("privacy_status") or "public",
+                "scoreId": entry.get("score_id"),
+                "sourceSize": max(0, int(entry.get("source_size") or 0)),
+                "uploadedAt": uploaded_at,
+                "cleanup": entry.get("cleanup") if isinstance(entry.get("cleanup"), dict) else None,
+                "deletedAt": entry.get("deleted_at") if isinstance(entry.get("deleted_at"), str) else None,
+            })
+        rows.sort(key=lambda row: row["uploadedAt"], reverse=True)
+        return rows[:limit]
+
+    def job_id_for_video(self, video_id: str) -> str | None:
+        for job_id, entry in self.entries().items():
+            if isinstance(entry, dict) and entry.get("video_id") == video_id:
+                return job_id
+        return None
+
+    async def mark_deleted(self, job_id: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._mark_deleted_sync, job_id)
+
+    def _mark_deleted_sync(self, job_id: str) -> None:
+        uploads = self.entries()
+        entry = uploads.get(job_id)
+        if not isinstance(entry, dict):
+            return
+        entry["deleted_at"] = datetime.now(timezone.utc).isoformat()
+        self._write({"version": 1, "uploads": uploads})
+
     async def record(
         self,
         job_id: str,

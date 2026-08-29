@@ -1,0 +1,141 @@
+diff --git a/osu_mania_renderer_v2/beatmap/models.py b/osu_mania_renderer_v2/beatmap/models.py
+index 4c203f6..feb38e5 100644
+--- a/osu_mania_renderer_v2/beatmap/models.py
++++ b/osu_mania_renderer_v2/beatmap/models.py
+@@ -211,6 +211,11 @@ class RenderOptions:
+     # values shrink the approach window proportionally — 34 is twice as fast
+     # as 17, 8 is roughly half. Range clamped at CLI level.
+     scroll_speed: int | None = None
++    # HUD sizing multipliers. These are separate so large judgement sprites
++    # can be toned down without making score/combo hard to read at 1080p.
++    judgment_scale: float = 1.0
++    score_scale: float = 1.0
++    combo_scale: float = 1.0
+     # Per-channel audio gain (0.0 - 1.0). 1.0 = unchanged. Applied as ffmpeg
+     # `volume=` filters on the song and hitsound chains before amix.
+     music_volume: float = 1.0
+diff --git a/osu_mania_renderer_v2/gpu/renderer.py b/osu_mania_renderer_v2/gpu/renderer.py
+index 15f74cc..0278602 100644
+--- a/osu_mania_renderer_v2/gpu/renderer.py
++++ b/osu_mania_renderer_v2/gpu/renderer.py
+@@ -1052,7 +1052,7 @@ class FrameRenderer:
+         # square aspect (not stretched to a wide rect) keeps text proportions
+         # right; pf_w * 0.55 makes the visible text comparable in size to the
+         # combo number above it without dwarfing the playfield.
+-        jud_w = int(pf_w * 0.55)
++        jud_w = int(pf_w * 0.55 * self.options.judgment_scale)
+         jud_h = jud_w
+ 
+         # Judgment popup — uses the latest judgment event (most recent hit).
+@@ -1094,7 +1094,7 @@ class FrameRenderer:
+                 combo_colour = (255, 215, 100, 255)
+             else:
+                 combo_colour = (255, 255, 255, 255)
+-            ctex, cw, ch = self._cached_text(combo_str, 110, combo_colour)
++            ctex, cw, ch = self._cached_text(combo_str, int(110 * self.options.combo_scale), combo_colour)
+             pop = 1.0
+             if scene.combo_age_ms < 180:
+                 t = scene.combo_age_ms / 180.0
+diff --git a/osu_mania_renderer_v2/wiki_elements/hud.py b/osu_mania_renderer_v2/wiki_elements/hud.py
+index d3ca9d2..551f6c3 100644
+--- a/osu_mania_renderer_v2/wiki_elements/hud.py
++++ b/osu_mania_renderer_v2/wiki_elements/hud.py
+@@ -301,11 +301,11 @@ def _draw_fallback_hud(ctx) -> None:
+     top_pad = max(8, int(rc.height * 0.02))
+     right_x = rc.width - right_pad
+ 
+-    score_h = max(20, int(rc.height * 0.058))
++    score_h = max(20, int(rc.height * 0.058 * ctx.options.score_scale))
+     stex, sw, sh = fr._cached_text(f"{int(disp_score):d}", score_h, (255, 255, 255, 255))
+     fr._draw_external_texture(stex, x=right_x - sw, y=rc.height - top_pad - sh,
+                               w=sw, h=sh, alpha=1.0)
+-    acc_h = max(14, int(rc.height * 0.036))
++    acc_h = max(14, int(rc.height * 0.036 * ctx.options.score_scale))
+     atex, aw, ah = fr._cached_text(f"{disp_acc:.2f}%", acc_h, (235, 235, 245, 255))
+     acc_y = rc.height - top_pad - sh - ah - max(2, int(rc.height * 0.008))
+     fr._draw_external_texture(atex, x=right_x - aw, y=acc_y, w=aw, h=ah, alpha=0.95)
+@@ -416,7 +416,7 @@ def _draw_argon_hud(ctx) -> None:
+         _draw_tl(ctx, "argon_hp", hx + fw - hh, hy - 3 * A, hh * 1.6, hh + 6 * A,
+                  (0.49, 0.84, 0.99, 0.6), direct=True)
+     if ctx.options.show_score:
+-        score_box = 52 * A
++        score_box = 52 * A * ctx.options.score_scale
+         # Origin TopRight at x = components_x_offset(50) + 200 = 250; the
+         # number is vertically centred in the wedge.
+         score_right = 250 * A
+@@ -426,7 +426,7 @@ def _draw_argon_hud(ctx) -> None:
+                       center_y=score_cy_gl, glyph_h=score_box, align="right")
+ 
+     # ── Accuracy: top-right, with the small 'ACCURACY' label above it ──
+-    acc_box = 42 * A
++    acc_box = 42 * A * ctx.options.score_scale
+     acc_right = rc.width - 20 * A
+     label_top = 14 * A
+     ltex, lw, lh = fr._cached_text("ACCURACY", 15,  # 1080-ref (auto-scaled)
+@@ -503,14 +503,14 @@ def hud(*, element, skin, assets, variables, ctx) -> None:
+     mods_top = top_pad
+ 
+     if ctx.options.show_score:
+-        score_h = score_nh * hud_scale * 0.96
++        score_h = score_nh * hud_scale * 0.96 * ctx.options.score_scale
+         score_cy = rc.height - top_pad - score_h / 2.0
+         ctx.draw_number(
+             f"{int(display_score):d}", x=right_x, center_y=score_cy,
+             glyph_h=score_h, overlap_px=overlap, align="right",
+         )
+         # Accuracy: scale 0.6×0.96, Margin H=17 (7px more indented than score).
+-        acc_h = score_nh * hud_scale * 0.576
++        acc_h = score_nh * hud_scale * 0.576 * ctx.options.score_scale
+         acc_right_x = rc.width - max(10, int(17 * hud_scale))
+         acc_cy = (score_cy - score_h / 2.0) - max(4, int(9 * hud_scale)) - acc_h / 2.0
+         ctx.draw_number(
+diff --git a/osu_mania_renderer_v2/wiki_elements/notes.py b/osu_mania_renderer_v2/wiki_elements/notes.py
+index 128f265..6e2142d 100644
+--- a/osu_mania_renderer_v2/wiki_elements/notes.py
++++ b/osu_mania_renderer_v2/wiki_elements/notes.py
+@@ -561,7 +561,7 @@ def _argon_combo_and_judgment(ctx) -> None:
+                 sp = min(age, 1800) / 1800.0
+                 scale = 1.0 + 0.4 * (1.0 - (1.0 - sp) ** 5)
+                 alpha = max(0.0, 1.0 - age / 800.0)
+-                jh = max(8, int(40 * scale))
++                jh = max(8, int(40 * scale * ctx.options.judgment_scale))
+                 tracking = int(jh * 0.40)
+                 glyphs = [fr._cached_text(ch, jh, (*col, 255)) for ch in text]
+                 total = sum(g[1] for g in glyphs) + tracking * (len(glyphs) - 1)
+@@ -588,7 +588,7 @@ def _argon_combo_and_judgment(ctx) -> None:
+                 unit = 40.0 * (h / 1080.0) / 28.0     # lazer local unit -> render px
+                 drop = mp * 100.0 * unit
+                 rot = mp * 40.0
+-                mtex, mw, mhh = fr._cached_text("MISS", max(8, int(40 * scale)),
++                mtex, mw, mhh = fr._cached_text("MISS", max(8, int(40 * scale * ctx.options.judgment_scale)),
+                                                 (*col, 255))
+                 fr._draw_external_texture(
+                     mtex, x=int(center_x - mw / 2),
+@@ -603,7 +603,7 @@ def _argon_combo_and_judgment(ctx) -> None:
+         t = s.combo_age_ms / 180.0
+         pop = 1.0 + 0.14 * (1.0 - t) ** 2
+     # ArgonComboCounter Scale 1.3; box height in 1080-space ≈ 72px.
+-    combo_box = 72 * A * pop
++    combo_box = 72 * A * pop * ctx.options.combo_scale
+     _argon_number(ctx, f"{s.combo}", x=center_x, center_y=centre_y_gl,
+                   glyph_h=combo_box, align="center")
+ 
+@@ -648,7 +648,7 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
+     # a skin ships an oversized combo font or an extreme ComboPosition (e.g.
+     # ComboPosition:460 drops it onto the receptors). Cap height to ~one column
+     # (and ≤11% of frame), then lift it so it never sits below the hit line.
+-    combo_h = min(combo_h, ctx.col_w_uniform * 1.0, h * 0.11)
++    combo_h = min(combo_h * ctx.options.combo_scale, ctx.col_w_uniform * 1.65, h * 0.17)
+     centre_y_gl = max(centre_y_gl, ctx.receptor_centre_y_gl + combo_h)
+ 
+     # ── Judgement burst — drawn just BELOW the combo (lazer mania stacks the
+@@ -668,7 +668,8 @@ def combo_and_judgment(*, element, skin, assets, variables, ctx) -> None:
+                 # gets the ×1.6 POSITION_SCALE_FACTOR → native px × (height/480),
+                 # not the plain texture scale. (Aspect is the sprite's own —
+                 # Night05's mania-hit300-0 is a wide 256×72 animation frame.)
+-                jw, jh = nw * px, nh * px
++                jw = nw * px * ctx.options.judgment_scale
++                jh = nh * px * ctx.options.judgment_scale
+                 # Centre below the combo: combo bottom − gap − half judgment.
+                 jcy = centre_y_gl - combo_h / 2.0 - jh / 2.0 - max(4, int(h * 0.01))
+                 fr._draw_sprite_idx(

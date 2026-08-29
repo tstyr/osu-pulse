@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { renderApiError } from "@/lib/render/api";
 import { getBridgeConfiguration } from "@/lib/control/settings";
-import { heartbeatRenderer, requireBridgeAccess } from "@/lib/render/server";
+import { heartbeatRenderer, pendingRenderVideoCommand, renderVideoSyncSchema, requireBridgeAccess, syncRenderVideos } from "@/lib/render/server";
 
 const schema = z.object({
   rendererId: z.string().min(1).max(64),
@@ -16,6 +16,7 @@ const schema = z.object({
   capacity: z.number().int().min(1).max(2).optional(),
   configurationVersion: z.number().int().min(0).optional(),
   restartRequired: z.boolean().optional(),
+  videos: z.array(renderVideoSyncSchema).max(200).optional(),
 });
 
 export async function POST(request: Request) {
@@ -23,7 +24,12 @@ export async function POST(request: Request) {
     requireBridgeAccess(request);
     const input = schema.parse(await request.json());
     await heartbeatRenderer(input);
-    return Response.json({ ok: true, configuration: await getBridgeConfiguration() });
+    await syncRenderVideos(input.videos ?? []);
+    return Response.json({
+      ok: true,
+      configuration: await getBridgeConfiguration(),
+      videoCommand: await pendingRenderVideoCommand(),
+    });
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: "Invalid heartbeat" }, { status: 400 });
     return renderApiError(error);

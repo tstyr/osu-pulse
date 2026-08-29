@@ -33,6 +33,13 @@ SYNCED_ENV_NAMES = frozenset({
     "VIDEO_COMPRESS",
     "VIDEO_COMPRESS_QUALITY",
     "VIDEO_COMPRESS_AUDIO_KBPS",
+    "MANIA_SCROLL_SPEED",
+    "MANIA_JUDGMENT_SCALE",
+    "MANIA_SCORE_SCALE",
+    "MANIA_COMBO_SCALE",
+    "STD_BACKGROUND_PARALLAX",
+    "STD_KEY_OVERLAY",
+    "STD_KEY_OVERLAY_SCALE",
     "YOUTUBE_AUTO_UPLOAD",
     "YOUTUBE_PRIVACY_STATUS",
     "YOUTUBE_DELETE_AFTER_UPLOAD",
@@ -148,6 +155,7 @@ class CloudRenderBridge:
                 "cloud_bridge": True,
             },
             "version": "2.0.0",
+            "videos": self.manager.youtube_archive.cloud_entries(),
         }
 
     async def _run(self) -> None:
@@ -191,7 +199,9 @@ class CloudRenderBridge:
         assert self._client
         response = await self._client.post("/api/render/bridge/heartbeat", json=await self._heartbeat())
         response.raise_for_status()
-        await self._accept_configuration(response.json())
+        body = response.json()
+        await self._accept_configuration(body)
+        await self._accept_video_command(body)
 
     async def _claim(self) -> dict[str, Any] | None:
         assert self._client
@@ -223,6 +233,38 @@ class CloudRenderBridge:
         self._pending_configuration_version = version
         self._restart_required = True
         LOGGER.info("Control-panel configuration v%s saved; restart deferred until idle", version)
+
+    async def _accept_video_command(self, response_body: object) -> None:
+        if not isinstance(response_body, dict):
+            return
+        command = response_body.get("videoCommand")
+        if not isinstance(command, dict) or command.get("type") != "delete":
+            return
+        video_id = command.get("videoId")
+        if not isinstance(video_id, str):
+            return
+        success = False
+        error: str | None = None
+        try:
+            uploader = self.manager.youtube_uploader
+            if not uploader:
+                raise RuntimeError("YouTube uploader is unavailable")
+            job_id = self.manager.youtube_archive.job_id_for_video(video_id)
+            if not job_id:
+                raise RuntimeError("Video is not present in the local upload registry")
+            await uploader.delete_video(video_id)
+            await self.manager.youtube_archive.mark_deleted(job_id)
+            success = True
+            LOGGER.info("youtube video deleted from control panel video_id=%s", video_id)
+        except Exception as exc:
+            error = str(exc)[:500]
+            LOGGER.exception("youtube video delete failed video_id=%s", video_id)
+        assert self._client
+        response = await self._client.patch(
+            f"/api/render/bridge/videos/{video_id}",
+            json={"success": success, "error": error},
+        )
+        response.raise_for_status()
 
     @staticmethod
     def _write_environment(values: dict[str, str], version: int) -> None:

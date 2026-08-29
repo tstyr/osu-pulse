@@ -18,6 +18,7 @@ from .models import ScoreMetadata
 LOGGER = logging.getLogger("renderer.youtube")
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 RANGE_PATTERN = re.compile(r"(?:bytes=)?0-([0-9]+)$")
 TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
@@ -96,6 +97,29 @@ class YouTubeUploader:
             and self.settings.youtube_client_id
             and self.settings.youtube_refresh_token
         )
+
+    @property
+    def credentials_configured(self) -> bool:
+        return bool(self.settings.youtube_client_id and self.settings.youtube_refresh_token)
+
+    async def delete_video(self, video_id: str) -> None:
+        if not self.credentials_configured:
+            raise YouTubeUploadError("YouTube OAuth is not configured")
+        if not VIDEO_ID_PATTERN.fullmatch(video_id):
+            raise YouTubeUploadError("YouTube video ID is invalid")
+        timeout = httpx.Timeout(connect=30, read=60, write=60, pool=30)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, transport=self._transport, follow_redirects=False) as client:
+                token = await self._access_token(client)
+                response = await client.delete(
+                    VIDEOS_URL,
+                    params={"id": video_id},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if response.status_code not in {204, 404}:
+                    raise YouTubeUploadError(f"YouTube delete failed: {self._error_detail(response)}")
+        except httpx.HTTPError as exc:
+            raise YouTubeUploadError("YouTube delete connection failed") from exc
 
     async def upload(
         self,
