@@ -1,14 +1,22 @@
 "use client";
 
-import { AlertCircle, ArrowRight, KeyRound, LoaderCircle } from "lucide-react";
+import { AlertCircle, ArrowRight, KeyRound, LoaderCircle, MessageCircle } from "lucide-react";
 import { useActionState } from "react";
 
 import { login } from "@/app/actions/auth";
 
-export function LoginForm() {
+export function LoginForm({ discordEnabled, oauthError }: { discordEnabled: boolean; oauthError: string | null }) {
   const [state, action, pending] = useActionState(login, null);
   return (
-    <form action={action}>
+    <div>
+      {discordEnabled ? <>
+        <a href="/api/auth/discord/start" className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[#5865f2] text-sm font-semibold text-white transition hover:bg-[#4752c4]">
+          <MessageCircle className="size-4" /> Discordでログイン
+        </a>
+        <div className="my-5 flex items-center gap-3 text-[10px] uppercase tracking-[0.12em] text-[#9aa2ae]"><span className="h-px flex-1 bg-[#e2e6ec]" />または<span className="h-px flex-1 bg-[#e2e6ec]" /></div>
+      </> : null}
+      {oauthError ? <p role="alert" className="mb-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700"><AlertCircle className="mt-0.5 size-3.5 shrink-0" /> {oauthError}</p> : null}
+      <form action={action}>
       <label className="cp-label" htmlFor="keyphrase">キーフレーズ</label>
       <div className="relative mt-1">
         <KeyRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8a94a3]" />
@@ -32,6 +40,7 @@ export function LoginForm() {
         {pending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
         {pending ? "確認中…" : "ログイン"}
       </button>
-    </form>
+      </form>
+    </div>
   );
 }

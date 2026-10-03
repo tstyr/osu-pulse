@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -14,9 +15,11 @@ from dotenv import set_key
 from .config import Settings
 from .errors import RenderError
 from .jobs import JobManager
-from .models import JobStatus, RenderJob, TERMINAL_STATUSES
+from .models import JobStatus, RenderJob, ScoreMetadata, TERMINAL_STATUSES
 from .prerequisites import DependencyState
+from .process_utils import communicate_with_timeout
 from .render_options import RenderOptions
+from .score_resolver import parse_score_url
 from .system_metrics import SystemMetricsCollector
 from .video_sharer import VideoSharer
 
@@ -33,6 +36,15 @@ SYNCED_ENV_NAMES = frozenset({
     "VIDEO_COMPRESS",
     "VIDEO_COMPRESS_QUALITY",
     "VIDEO_COMPRESS_AUDIO_KBPS",
+    "VIDEO_WATERMARK_ENABLED",
+    "VIDEO_WATERMARK_TEXT",
+    "VIDEO_WATERMARK_POSITION",
+    "STORAGE_RETENTION_HOURS",
+    "RENDER_SCHEDULE_ENABLED",
+    "RENDER_ALLOWED_START_TIME",
+    "RENDER_ALLOWED_END_TIME",
+    "RENDER_IDLE_ONLY",
+    "RENDER_IDLE_MINUTES",
     "MANIA_SCROLL_SPEED",
     "MANIA_JUDGMENT_SCALE",
     "MANIA_SCORE_SCALE",
@@ -44,6 +56,16 @@ SYNCED_ENV_NAMES = frozenset({
     "YOUTUBE_PRIVACY_STATUS",
     "YOUTUBE_DELETE_AFTER_UPLOAD",
     "YOUTUBE_CATEGORY_ID",
+    "YOUTUBE_TITLE_TEMPLATE",
+    "YOUTUBE_DESCRIPTION_TEMPLATE",
+    "YOUTUBE_TAGS",
+    "YOUTUBE_PLAYLIST_X_ID",
+    "YOUTUBE_PLAYLIST_S_ID",
+    "YOUTUBE_PLAYLIST_A_ID",
+    "YOUTUBE_PLAYLIST_PP100_ID",
+    "YOUTUBE_PLAYLIST_PP200_ID",
+    "YOUTUBE_PLAYLIST_PP300_ID",
+    "YOUTUBE_PLAYLIST_PP400_ID",
     "OSU_CLIENT_ID",
     "OSU_CLIENT_SECRET",
     "YOUTUBE_CLIENT_ID",
@@ -169,6 +191,8 @@ class CloudRenderBridge:
                         logging.shutdown()
                         os._exit(RESTART_EXIT_CODE)
                 else:
+                    # The claim endpoint filters automatic requests using the
+                    # heartbeat's start policy. Manual requests may run anytime.
                     await self._fill_capacity()
             except asyncio.CancelledError:
                 raise
@@ -221,7 +245,7 @@ class CloudRenderBridge:
             return
         version = configuration.get("version")
         env = configuration.get("env")
-        if not isinstance(version, int) or version <= self._pending_configuration_version or not isinstance(env, dict):
+        if not isinstance(version, int) or not isinstance(env, dict):
             return
         filtered: dict[str, str] = {}
         for name, value in env.items():
@@ -229,10 +253,20 @@ class CloudRenderBridge:
                 filtered[name] = value
         if not filtered:
             return
+        # A DB migration or restore can legitimately reset the settings version.
+        # Compare content as well so the renderer does not ignore the new source
+        # forever merely because its previous local version number was higher.
+        content_changed = any(os.getenv(name) != value for name, value in filtered.items())
+        if version == self._pending_configuration_version and not content_changed:
+            return
+        if version < self._pending_configuration_version and not content_changed:
+            self._pending_configuration_version = version
+            self._configuration_version = version
+            return
         await asyncio.to_thread(self._write_environment, filtered, version)
         self._pending_configuration_version = version
         self._restart_required = True
-        LOGGER.info("Control-panel configuration v%s saved; restart deferred until idle", version)
+        LOGGER.info("Control-panel configuration v%s saved (content_changed=%s); restart deferred until idle", version, content_changed)
 
     async def _accept_video_command(self, response_body: object) -> None:
         if not isinstance(response_body, dict):
@@ -277,6 +311,7 @@ class CloudRenderBridge:
     async def _process(self, cloud_job: dict[str, Any]) -> None:
         cloud_id = str(cloud_job["jobId"])
         local_job: RenderJob | None = None
+        bypass_start_policy = cloud_job.get("requestSource") != "automatic"
         try:
             raw_options = cloud_job.get("options") or {}
             options = RenderOptions.from_values(
@@ -284,16 +319,30 @@ class CloudRenderBridge:
                 raw_options.get("fps"),
                 raw_options.get("speed"),
                 raw_options.get("motionBlur"),
+                raw_options.get("highlight"),
             )
+            if cloud_job.get("inputType") == "composition":
+                await self._process_composition(cloud_id, cloud_job, options)
+                return
             user_id = f"cloud-{cloud_id}"
             if cloud_job.get("inputType") == "score_url":
-                local_job = await self.manager.submit_score(user_id, str(cloud_job.get("scoreUrl") or ""), options)
+                local_job = await self.manager.submit_score(
+                    user_id,
+                    str(cloud_job.get("scoreUrl") or ""),
+                    options,
+                    bypass_start_policy=bypass_start_policy,
+                )
             else:
                 encoded = cloud_job.get("replayData")
                 if not isinstance(encoded, str):
                     raise ValueError("Cloud replay payload is missing")
                 replay = base64.b64decode(encoded, validate=True)
-                local_job = await self.manager.submit_replay(user_id, replay, options)
+                local_job = await self.manager.submit_replay(
+                    user_id,
+                    replay,
+                    options,
+                    bypass_start_policy=bypass_start_policy,
+                )
             self._local_jobs[cloud_id] = local_job
             await self._monitor(cloud_id, local_job)
         except asyncio.CancelledError:
@@ -319,6 +368,139 @@ class CloudRenderBridge:
             })
         finally:
             self._local_jobs.pop(cloud_id, None)
+
+    async def _process_composition(self, cloud_id: str, cloud_job: dict[str, Any], options: RenderOptions) -> None:
+        encoded = cloud_job.get("replayData")
+        if not isinstance(encoded, str):
+            raise ValueError("Composition manifest is missing")
+        manifest = json.loads(encoded)
+        if not isinstance(manifest, dict):
+            raise ValueError("Composition manifest is invalid")
+        kind = manifest.get("kind")
+        comparison_mode = manifest.get("comparisonMode")
+        score_urls = manifest.get("scoreUrls")
+        title = str(manifest.get("title") or "osu! Pulse Composition")[:120]
+        if kind not in {"montage", "comparison"} or not isinstance(score_urls, list):
+            raise ValueError("Composition manifest is invalid")
+        urls = [str(value) for value in score_urls if isinstance(value, str)][:8]
+        if len(urls) < 2 or (kind == "comparison" and len(urls) != 2):
+            raise ValueError("Composition requires the expected number of scores")
+        if kind == "comparison" and comparison_mode == "same-beatmap":
+            references = [parse_score_url(url) for url in urls]
+            scores = await asyncio.gather(*(self.manager.osu_api.get_score(reference) for reference in references))
+            if (
+                scores[0].beatmap_id != scores[1].beatmap_id
+                or scores[0].ruleset != scores[1].ruleset
+            ):
+                raise ValueError("昔/現在比較には同じ譜面・同じモードのスコアを指定してください")
+        jobs: list[RenderJob] = []
+        try:
+            await self._patch(cloud_id, {"status": "resolving_score", "progress": 0, "message": "合成するリプレイを準備中"})
+            for index, url in enumerate(urls):
+                job = await self.manager.submit_score(
+                    f"composition-{cloud_id}-{index}",
+                    url,
+                    options,
+                    suppress_youtube=True,
+                    bypass_start_policy=cloud_job.get("requestSource") != "automatic",
+                )
+                jobs.append(job)
+            if jobs:
+                self._local_jobs[cloud_id] = jobs[0]
+            while any(job.status not in TERMINAL_STATUSES for job in jobs):
+                progress = round(sum(job.progress for job in jobs) / len(jobs) * 0.85)
+                result = await self._patch(cloud_id, {
+                    "status": "rendering",
+                    "progress": progress,
+                    "message": f"素材をレンダリング中 ({sum(job.status in TERMINAL_STATUSES for job in jobs)}/{len(jobs)})",
+                })
+                if result.get("cancelRequested"):
+                    await asyncio.gather(*(self.manager.cancel(job.id) for job in jobs), return_exceptions=True)
+                await asyncio.sleep(3)
+            failed = [job for job in jobs if job.status != JobStatus.COMPLETED or not job.output_path]
+            if failed:
+                detail = next((job.error for job in failed if job.error), "素材レンダーに失敗しました")
+                raise RuntimeError(detail)
+            await self._patch(cloud_id, {"status": "encoding", "progress": 88, "message": "動画を合成中"})
+            local_composition_id = cloud_id.replace("-", "")
+            output = await self._compose_outputs(local_composition_id, kind, [job.output_path for job in jobs if job.output_path], options)
+            composition = RenderJob(
+                id=local_composition_id,
+                user_id=f"cloud-{cloud_id}",
+                input_type="composition",
+                source_key=f"composition:{cloud_id}",
+                options=options,
+                status=JobStatus.COMPLETED,
+                progress=100,
+                message="Composition completed",
+                metadata=ScoreMetadata(
+                    player_name=" / ".join(dict.fromkeys(job.metadata.player_name for job in jobs if job.metadata and job.metadata.player_name))[:120] or "osu! Pulse",
+                    artist="osu! Pulse",
+                    title=title,
+                    difficulty="Monthly montage" if kind == "montage" else "Old vs New",
+                    ruleset=jobs[0].metadata.ruleset if jobs[0].metadata else "osu",
+                ),
+                output_path=output,
+                output_size_bytes=output.stat().st_size,
+            )
+            self._local_jobs[cloud_id] = composition
+            for job in jobs:
+                if job.output_path and job.output_path != output:
+                    job.output_path.unlink(missing_ok=True)
+            await self.manager.publish_completed_job(composition)
+            await self._monitor(cloud_id, composition)
+        except asyncio.CancelledError:
+            await asyncio.gather(*(self.manager.cancel(job.id) for job in jobs if job.status not in TERMINAL_STATUSES), return_exceptions=True)
+            raise
+
+    async def _compose_outputs(self, cloud_id: str, kind: str, inputs: list[Path], options: RenderOptions) -> Path:
+        ffmpeg = self.settings.ffmpeg_path
+        if not ffmpeg or not ffmpeg.is_file():
+            raise RuntimeError("FFmpeg is unavailable for composition")
+        output = (self.settings.output_path / f"{cloud_id}.mp4").resolve()
+        if not output.is_relative_to(self.settings.output_path.resolve()):
+            raise RuntimeError("Unsafe composition output path")
+        width, height = options.size
+        command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y"]
+        if kind == "montage":
+            for source in inputs:
+                command.extend(["-sseof", "-30", "-i", str(source)])
+            filters: list[str] = []
+            for index in range(len(inputs)):
+                filters.append(f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={options.fps},trim=duration=30,setpts=PTS-STARTPTS[v{index}]")
+                filters.append(f"[{index}:a]aresample=48000,atrim=duration=30,asetpts=PTS-STARTPTS[a{index}]")
+            chain = "".join(f"[v{index}][a{index}]" for index in range(len(inputs)))
+            filters.append(f"{chain}concat=n={len(inputs)}:v=1:a=1[v][a]")
+        else:
+            for source in inputs:
+                command.extend(["-i", str(source)])
+            half = width // 2
+            filters = [
+                f"[0:v]scale={half}:{height}:force_original_aspect_ratio=decrease,pad={half}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={options.fps}[left]",
+                f"[1:v]scale={half}:{height}:force_original_aspect_ratio=decrease,pad={half}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={options.fps}[right]",
+                "[left][right]hstack=inputs=2[v]",
+                "[0:a][1:a]amix=inputs=2:duration=shortest:normalize=0[a]",
+            ]
+        command.extend(["-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]"])
+        encoder = "h264_nvenc" if self.dependencies.nvenc else "h264_amf" if self.dependencies.amf else "libx264"
+        command.extend(["-c:v", encoder])
+        if encoder == "h264_nvenc":
+            command.extend(["-preset", "p5", "-cq", "20", "-b:v", "0"])
+        elif encoder == "h264_amf":
+            command.extend(["-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20"])
+        else:
+            command.extend(["-preset", "medium", "-crf", "20"])
+        command.extend(["-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(output)])
+        process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        try:
+            _, stderr = await communicate_with_timeout(process, timeout=self.settings.render_timeout_seconds)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            output.unlink(missing_ok=True)
+            raise
+        if process.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
+            output.unlink(missing_ok=True)
+            raise RuntimeError(f"Video composition failed: {stderr.decode('utf-8', errors='replace')[-400:]}")
+        return output
 
     async def _monitor(self, cloud_id: str, local_job: RenderJob) -> None:
         while local_job.status not in TERMINAL_STATUSES:

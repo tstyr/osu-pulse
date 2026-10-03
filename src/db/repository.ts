@@ -14,7 +14,7 @@ import type { OsuMode } from "@/lib/osu/modes";
 import type { OsuUser } from "@/lib/osu/types";
 import type { ServerStatusChannelIds } from "./schema";
 
-import { getDb } from "./index";
+import { databaseResultRows, getDb, withDatabaseRetry } from "./index";
 import {
   accountGuilds,
   accounts,
@@ -22,6 +22,8 @@ import {
   discordAccountLinks,
   focusSessions,
   guildSettings,
+  manuallyTrackedAccounts,
+  profileSnapshots,
   reminders,
   scoreEvents,
 } from "./schema";
@@ -45,29 +47,10 @@ export async function linkAccount(input: {
     where: eq(discordAccountLinks.discordUserId, input.discordUserId),
   });
 
-  const [account] = await db
-    .insert(accounts)
-    .values({
-      osuUserId: input.user.id,
-      username: input.user.username,
-      avatarUrl: input.user.avatar_url,
-      countryCode: input.user.country_code,
-      primaryMode: input.primaryMode,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: accounts.osuUserId,
-      set: {
-        username: input.user.username,
-        avatarUrl: input.user.avatar_url,
-        countryCode: input.user.country_code,
-        primaryMode: input.primaryMode,
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
-
-  if (!account) throw new Error("アカウント登録に失敗しました。");
+  const account = await upsertAccount({
+    user: input.user,
+    primaryMode: input.primaryMode,
+  });
 
   await db
     .insert(discordAccountLinks)
@@ -99,12 +82,74 @@ export async function linkAccount(input: {
       .select({ value: count() })
       .from(discordAccountLinks)
       .where(eq(discordAccountLinks.accountId, previousLink.accountId));
-    if ((remaining?.value ?? 0) === 0) {
+    const manuallyTracked = await isAccountManuallyTracked(previousLink.accountId);
+    if ((remaining?.value ?? 0) === 0 && !manuallyTracked) {
       await db.delete(accounts).where(eq(accounts.id, previousLink.accountId));
     }
   }
 
   return account;
+}
+
+export async function upsertAccount(input: {
+  user: OsuUser;
+  primaryMode: OsuMode;
+}) {
+  const [account] = await getDb()
+    .insert(accounts)
+    .values({
+      osuUserId: input.user.id,
+      username: input.user.username,
+      avatarUrl: input.user.avatar_url,
+      countryCode: input.user.country_code,
+      primaryMode: input.primaryMode,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: accounts.osuUserId,
+      set: {
+        username: input.user.username,
+        avatarUrl: input.user.avatar_url,
+        countryCode: input.user.country_code,
+        primaryMode: input.primaryMode,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  if (!account) throw new Error("アカウント登録に失敗しました。");
+  return account;
+}
+
+export async function markAccountManuallyTracked(accountId: string) {
+  const [row] = await getDb()
+    .insert(manuallyTrackedAccounts)
+    .values({ accountId, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: manuallyTrackedAccounts.accountId,
+      set: { updatedAt: new Date() },
+    })
+    .returning();
+  return row;
+}
+
+export async function isAccountManuallyTracked(accountId: string) {
+  return Boolean(await getDb().query.manuallyTrackedAccounts.findFirst({
+    where: eq(manuallyTrackedAccounts.accountId, accountId),
+    columns: { accountId: true },
+  }));
+}
+
+export async function setLinkedPrimaryMode(
+  discordUserId: string,
+  primaryMode: OsuMode,
+) {
+  const [updated] = await getDb()
+    .update(discordAccountLinks)
+    .set({ primaryMode, updatedAt: new Date() })
+    .where(eq(discordAccountLinks.discordUserId, discordUserId))
+    .returning();
+  return updated;
 }
 
 export async function updateAccountIdentity(
@@ -124,15 +169,15 @@ export async function updateAccountIdentity(
 }
 
 export async function getAccountsByDiscord(discordUserId: string) {
-  const rows = await getDb()
-    .select({
-      account: accounts,
-      primaryMode: discordAccountLinks.primaryMode,
-    })
-    .from(discordAccountLinks)
-    .innerJoin(accounts, eq(discordAccountLinks.accountId, accounts.id))
-    .where(eq(discordAccountLinks.discordUserId, discordUserId))
-    .orderBy(asc(discordAccountLinks.createdAt));
+  const rows = await withDatabaseRetry(() => getDb()
+      .select({
+        account: accounts,
+        primaryMode: discordAccountLinks.primaryMode,
+      })
+      .from(discordAccountLinks)
+      .innerJoin(accounts, eq(discordAccountLinks.accountId, accounts.id))
+      .where(eq(discordAccountLinks.discordUserId, discordUserId))
+      .orderBy(asc(discordAccountLinks.createdAt)));
   return rows.map((row) => ({
     ...row.account,
     primaryMode: row.primaryMode,
@@ -153,6 +198,16 @@ export async function listDailyDigestTargets() {
       asc(discordAccountLinks.createdAt),
       asc(discordAccountLinks.discordUserId),
     );
+}
+
+export async function listDiscordAccountAssignments() {
+  return getDb()
+    .select({
+      discordUserId: discordAccountLinks.discordUserId,
+      accountId: discordAccountLinks.accountId,
+    })
+    .from(discordAccountLinks)
+    .orderBy(asc(discordAccountLinks.createdAt));
 }
 
 export async function getAccountByDiscord(discordUserId: string) {
@@ -193,7 +248,8 @@ export async function unlinkAccount(
     .select({ value: count() })
     .from(discordAccountLinks)
     .where(eq(discordAccountLinks.accountId, account.id));
-  if ((remaining?.value ?? 0) === 0) {
+  const manuallyTracked = await isAccountManuallyTracked(account.id);
+  if ((remaining?.value ?? 0) === 0 && !manuallyTracked) {
     await db.delete(accounts).where(eq(accounts.id, account.id));
   }
   return account;
@@ -345,12 +401,49 @@ export async function getAnnouncementTargets(accountId: string) {
 export async function insertScoreEvent(
   score: typeof scoreEvents.$inferInsert,
 ) {
+  await getDb()
+    .update(scoreEvents)
+    .set({
+      beatmapId: score.beatmapId,
+      ...(score.beatmapsetId === null || score.beatmapsetId === undefined ? {} : { beatmapsetId: score.beatmapsetId }),
+      ...(score.artist === "Unknown artist" ? {} : { artist: score.artist }),
+      ...(score.title.startsWith("Beatmap #") ? {} : { title: score.title }),
+      difficulty: score.difficulty,
+      ...(score.mapper === null || score.mapper === undefined ? {} : { mapper: score.mapper }),
+      ...(score.coverUrl === null || score.coverUrl === undefined ? {} : { coverUrl: score.coverUrl }),
+      ...(score.pp === null || score.pp === undefined ? {} : { pp: score.pp }),
+      ...(score.starRating === null || score.starRating === undefined ? {} : { starRating: score.starRating }),
+      ...(score.bpm === null || score.bpm === undefined ? {} : { bpm: score.bpm }),
+      ...(score.beatmapLengthSeconds === null || score.beatmapLengthSeconds === undefined ? {} : { beatmapLengthSeconds: score.beatmapLengthSeconds }),
+      ...(score.ar === null || score.ar === undefined ? {} : { ar: score.ar }),
+      ...(score.od === null || score.od === undefined ? {} : { od: score.od }),
+      ...(score.cs === null || score.cs === undefined ? {} : { cs: score.cs }),
+      accuracy: score.accuracy,
+      rank: score.rank,
+      ...(score.maxCombo === null || score.maxCombo === undefined ? {} : { maxCombo: score.maxCombo }),
+      ...(score.score === null || score.score === undefined ? {} : { score: score.score }),
+      mods: score.mods,
+      passed: score.passed,
+      endedAt: score.endedAt,
+    })
+    .where(eq(scoreEvents.osuScoreId, score.osuScoreId));
   const [inserted] = await getDb()
     .insert(scoreEvents)
     .values(score)
     .onConflictDoNothing({ target: scoreEvents.osuScoreId })
     .returning();
   return inserted;
+}
+
+export async function updateScoreDifficultyAttributes(
+  scoreId: string,
+  attributes: { aimDifficulty?: number | null; speedDifficulty?: number | null },
+) {
+  const [updated] = await getDb().update(scoreEvents).set({
+    aimDifficulty: attributes.aimDifficulty ?? null,
+    speedDifficulty: attributes.speedDifficulty ?? null,
+  }).where(eq(scoreEvents.id, scoreId)).returning();
+  return updated ?? null;
 }
 
 export async function getRecentPlays(
@@ -366,10 +459,22 @@ export async function getRecentPlays(
     .limit(limit);
 }
 
+export async function getPlayerScoreHistory(
+  accountId: string,
+  mode: OsuMode,
+) {
+  return getDb()
+    .select()
+    .from(scoreEvents)
+    .where(and(eq(scoreEvents.accountId, accountId), eq(scoreEvents.mode, mode)))
+    .orderBy(desc(scoreEvents.endedAt));
+}
+
 export async function upsertDailySnapshot(
   snapshot: typeof dailySnapshots.$inferInsert,
 ) {
-  const [saved] = await getDb()
+  const db = getDb();
+  const [saved] = await db
     .insert(dailySnapshots)
     .values(snapshot)
     .onConflictDoUpdate({
@@ -384,6 +489,7 @@ export async function upsertDailySnapshot(
         pp: snapshot.pp,
         accuracy: snapshot.accuracy,
         playCount: snapshot.playCount,
+        playTimeSeconds: snapshot.playTimeSeconds,
         totalScore: snapshot.totalScore,
         rankedScore: snapshot.rankedScore,
         level: snapshot.level,
@@ -391,6 +497,43 @@ export async function upsertDailySnapshot(
       },
     })
     .returning();
+
+  const latest = await db.query.profileSnapshots.findFirst({
+    where: and(
+      eq(profileSnapshots.accountId, saved.accountId),
+      eq(profileSnapshots.mode, saved.mode),
+    ),
+    orderBy: desc(profileSnapshots.capturedAt),
+  });
+  const changed = !latest
+    || latest.globalRank !== saved.globalRank
+    || latest.countryRank !== saved.countryRank
+    || latest.pp !== saved.pp
+    || latest.accuracy !== saved.accuracy
+    || latest.playCount !== saved.playCount
+    || latest.playTimeSeconds !== saved.playTimeSeconds
+    || latest.totalScore !== saved.totalScore
+    || latest.rankedScore !== saved.rankedScore
+    || latest.level !== saved.level;
+
+  if (changed) {
+    await db.insert(profileSnapshots).values({
+      accountId: saved.accountId,
+      mode: saved.mode,
+      capturedAt: new Date(),
+      globalRank: saved.globalRank,
+      countryRank: saved.countryRank,
+      pp: saved.pp,
+      accuracy: saved.accuracy,
+      playCount: saved.playCount,
+      playTimeSeconds: saved.playTimeSeconds,
+      totalScore: saved.totalScore,
+      rankedScore: saved.rankedScore,
+      level: saved.level,
+      source: "live",
+    }).onConflictDoNothing();
+  }
+
   return saved;
 }
 
@@ -413,6 +556,17 @@ export async function getGrowthHistory(
         gte(dailySnapshots.snapshotDate, dateKey),
       ),
     )
+    .orderBy(asc(dailySnapshots.snapshotDate));
+}
+
+export async function getFullGrowthHistory(
+  accountId: string,
+  mode: OsuMode,
+) {
+  return getDb()
+    .select()
+    .from(dailySnapshots)
+    .where(and(eq(dailySnapshots.accountId, accountId), eq(dailySnapshots.mode, mode)))
     .orderBy(asc(dailySnapshots.snapshotDate));
 }
 
@@ -621,5 +775,5 @@ export async function getAccountsByIds(ids: string[]) {
 
 export async function pingDatabase() {
   const result = await getDb().execute(sql`select 1 as ok`);
-  return result.rows[0];
+  return databaseResultRows<{ ok: number }>(result)[0];
 }

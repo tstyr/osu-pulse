@@ -27,6 +27,14 @@ class YouTubeTitleTests(unittest.TestCase):
             "SS | 321.5pp | 98.77% | Artist - Song [Insane]",
         )
 
+    def test_title_normalizes_youtube_forbidden_angle_brackets(self) -> None:
+        metadata = ScoreMetadata(rank="B", pp=124.831, accuracy=0.8902, artist="Artist", title="Song", difficulty="Suki <3")
+        self.assertEqual(youtube_title(metadata), "B | 124.8pp | 89.02% | Artist - Song [Suki ＜3]")
+
+    def test_title_supports_admin_template(self) -> None:
+        metadata = ScoreMetadata(rank="A", pp=150.25, accuracy=0.9678, artist="Artist", title="Song", player_name="Player")
+        self.assertEqual(youtube_title(metadata, "{rank} {pp} · {player} · {artist} - {title}"), "A 150.2pp · Player · Artist - Song")
+
 
 class YouTubeUploaderTests(unittest.IsolatedAsyncioTestCase):
     async def test_deletes_video_with_refreshed_oauth_token(self) -> None:

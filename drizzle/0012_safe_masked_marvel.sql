@@ -1,0 +1,1 @@
+ALTER TABLE "daily_snapshots" ADD COLUMN "play_time_seconds" integer;

@@ -1,20 +1,28 @@
 import {
   ActionRowBuilder,
   type AutocompleteInteraction,
+  type ButtonInteraction,
   ButtonBuilder,
   ButtonStyle,
   ChatInputCommandInteraction,
   EmbedBuilder,
   MessageFlags,
   type Message,
+  type MessageContextMenuCommandInteraction,
 } from "discord.js";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   getAccountsByDiscord,
+  listDiscordAccountAssignments,
 } from "@/db/repository";
 import { getRecentScores } from "@/lib/osu/client";
 import type { OsuMode } from "@/lib/osu/modes";
 import type { OsuScore } from "@/lib/osu/types";
+import { getControlSettings } from "@/lib/control/settings";
+import { createCloudRenderBatch } from "@/db/render-queue-repository";
+import { publicAppUrl } from "@/lib/public-app-url";
 
 import {
   downloadDiscordReplay,
@@ -43,13 +51,52 @@ type RenderableRecentResult = {
   plays: RenderableRecentPlay[];
 };
 
-const RECENT_PLAY_CACHE_MS = 30_000;
+const RECENT_PLAY_CACHE_MS = 5 * 60_000;
+const PERSISTED_RECENT_PLAY_MAX_AGE_MS = 48 * 60 * 60_000;
+const AUTOCOMPLETE_DEADLINE_MS = 2_200;
 const RENDERABLE_RULESETS = ["osu", "mania"] as const;
+const recentPlayCachePath = resolve(process.cwd(), "work", "render-recent-cache.json");
 const recentPlayCache = new Map<
   string,
-  { expiresAt: number; result: RenderableRecentResult }
+  { expiresAt: number; savedAt: number; result: RenderableRecentResult }
 >();
 const recentPlayRequests = new Map<string, Promise<RenderableRecentResult>>();
+
+function loadPersistedRecentPlayCache() {
+  try {
+    const parsed = JSON.parse(readFileSync(recentPlayCachePath, "utf8")) as {
+      entries?: Record<string, { savedAt?: number; result?: RenderableRecentResult }>;
+    };
+    const now = Date.now();
+    for (const [discordUserId, entry] of Object.entries(parsed.entries ?? {})) {
+      if (!entry.result || !entry.savedAt || now - entry.savedAt > PERSISTED_RECENT_PLAY_MAX_AGE_MS) continue;
+      recentPlayCache.set(discordUserId, {
+        expiresAt: 0,
+        savedAt: entry.savedAt,
+        result: entry.result,
+      });
+    }
+  } catch {
+    // The cache is optional and is recreated after the first successful fetch.
+  }
+}
+
+function persistRecentPlayCache() {
+  try {
+    mkdirSync(resolve(process.cwd(), "work"), { recursive: true });
+    const entries = Object.fromEntries([...recentPlayCache.entries()].map(([discordUserId, entry]) => [
+      discordUserId,
+      { savedAt: entry.savedAt, result: entry.result },
+    ]));
+    const temporaryPath = `${recentPlayCachePath}.tmp`;
+    writeFileSync(temporaryPath, JSON.stringify({ entries }), "utf8");
+    renameSync(temporaryPath, recentPlayCachePath);
+  } catch (error) {
+    console.error("[render] recent play cache persistence failed:", error);
+  }
+}
+
+loadPersistedRecentPlayCache();
 
 function scoreEndedAt(score: OsuScore) {
   const parsed = Date.parse(score.ended_at ?? score.created_at ?? "");
@@ -66,7 +113,11 @@ async function fetchRenderableRecentPlays(
     accounts.flatMap((account) => RENDERABLE_RULESETS.map(async (ruleset) => ({
       account,
       ruleset,
-      scores: await getRecentScores(account.osuUserId, ruleset, 100),
+      // Failed scores normally have no downloadable replay and can otherwise
+      // push valid recent plays out of osu!'s 100-score response window.
+      scores: await getRecentScores(account.osuUserId, ruleset, 100, undefined, {
+        includeFails: false,
+      }),
     }))),
   );
   const successful = results.filter(
@@ -120,15 +171,46 @@ async function getRenderableRecentPlays(discordUserId: string) {
 
   const request = fetchRenderableRecentPlays(discordUserId)
     .then((result) => {
+      const savedAt = Date.now();
       recentPlayCache.set(discordUserId, {
-        expiresAt: Date.now() + RECENT_PLAY_CACHE_MS,
+        expiresAt: savedAt + RECENT_PLAY_CACHE_MS,
+        savedAt,
         result,
       });
+      persistRecentPlayCache();
       return result;
     })
     .finally(() => recentPlayRequests.delete(discordUserId));
   recentPlayRequests.set(discordUserId, request);
   return request;
+}
+
+function autocompleteResult(discordUserId: string) {
+  const cached = recentPlayCache.get(discordUserId);
+  if (cached) {
+    if (cached.expiresAt <= Date.now()) {
+      void getRenderableRecentPlays(discordUserId).catch((error) => {
+        console.error("[render] background recent score refresh failed:", error);
+      });
+    }
+    return Promise.resolve(cached.result);
+  }
+
+  const timeout = new Promise<null>((resolveTimeout) => {
+    const timer = setTimeout(() => resolveTimeout(null), AUTOCOMPLETE_DEADLINE_MS);
+    timer.unref();
+  });
+  return Promise.race([getRenderableRecentPlays(discordUserId), timeout]);
+}
+
+export async function warmRenderRecentPlayCache() {
+  const assignments = await listDiscordAccountAssignments();
+  const discordUserIds = [...new Set(assignments.map((assignment) => assignment.discordUserId))];
+  for (let index = 0; index < discordUserIds.length; index += 2) {
+    const batch = discordUserIds.slice(index, index + 2);
+    await Promise.allSettled(batch.map((discordUserId) => getRenderableRecentPlays(discordUserId)));
+  }
+  return discordUserIds.length;
 }
 
 const STATUS_LABELS: Record<RenderJobStatus["status"], string> = {
@@ -178,6 +260,14 @@ function progressBar(progress: number) {
   return `${"█".repeat(filled)}${"░".repeat(20 - filled)}`;
 }
 
+function progressDetail(message: string) {
+  const render = message.match(/Progress:\s*\d+%\s*,\s*Speed:\s*([^,]+)\s*,\s*ETA:\s*(.+)$/i);
+  if (render) return `処理速度: **${render[1].trim()}** · 残り目安: **${render[2].trim()}**`;
+  const upload = message.match(/Uploading to YouTube:\s*(\d+)%/i);
+  if (upload) return `YouTube転送: **${upload[1]}%**`;
+  return null;
+}
+
 function fileSizeLabel(bytes: number) {
   const gibibytes = bytes / (1024 ** 3);
   return gibibytes >= 1
@@ -193,7 +283,11 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 
   try {
-    const recent = await getRenderableRecentPlays(interaction.user.id);
+    const recent = await autocompleteResult(interaction.user.id);
+    if (!recent) {
+      await interaction.respond([]);
+      return;
+    }
     if (recent.accountCount === 0) {
       await interaction.respond([]);
       return;
@@ -213,7 +307,7 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 }
 
-function downloadComponents(url: string, youtubeUrl: string | null, provider?: "r2" | "vercel-blob" | "youtube") {
+function downloadComponents(url: string, youtubeUrl: string | null, provider?: "r2" | "vercel-blob" | "youtube", highlightUrl?: string | null) {
   if (url.length > 512) return [];
   const row = new ActionRowBuilder<ButtonBuilder>();
   if (provider !== "youtube") {
@@ -234,21 +328,46 @@ function downloadComponents(url: string, youtubeUrl: string | null, provider?: "
         .setURL(youtubeUrl),
     );
   }
+  if (highlightUrl && highlightUrl.length <= 512 && /^https:\/\//.test(highlightUrl)) {
+    row.addComponents(
+      new ButtonBuilder().setLabel("ハイライト").setEmoji("✂️").setStyle(ButtonStyle.Link).setURL(highlightUrl),
+    );
+  }
+  return [row];
+}
+
+function renderJobControls(job: RenderJobStatus, discordUserId: string) {
+  if (["completed", "failed", "cancelled"].includes(job.status)) return [];
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`render-job:${job.job_id}:${discordUserId}:cancel`)
+      .setLabel("キャンセル")
+      .setEmoji("⏹️")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`render-job:${job.job_id}:${discordUserId}:prioritize`)
+      .setLabel(job.priority > 0 ? "優先済み" : "優先する")
+      .setEmoji("⏫")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(job.status !== "queued" || job.priority > 0),
+  );
   return [row];
 }
 
 function renderEmbed(job: RenderJobStatus) {
   const metadata = job.metadata;
+  const detail = progressDetail(job.message);
   const embed = new EmbedBuilder()
     .setColor(job.status === "completed" ? 0x55dd99 : job.status === "failed" ? 0xff5577 : 0xff66aa)
     .setTitle(job.status === "completed" ? "✅ Render Complete" : "🎬 osu! Replay Render")
-    .setDescription(`状態: **${STATUS_LABELS[job.status]}**${job.queue_position ? `\n順番: **${job.queue_position}番目**` : ""}\n進捗: **${job.progress}%**\n\n${progressBar(job.progress)}`)
+    .setDescription(`状態: **${STATUS_LABELS[job.status]}**${job.queue_position ? `\n順番: **${job.queue_position}番目**` : ""}${job.estimated_wait_seconds > 0 ? `\n開始目安: **約${Math.ceil(job.estimated_wait_seconds / 60)}分後**` : ""}\n推定処理時間: **約${Math.max(1, Math.ceil(job.estimated_render_seconds / 60))}分**\n進捗: **${job.progress}%**\n\n${progressBar(job.progress)}`)
     .addFields(
       { name: "Resolution", value: job.options.resolution, inline: true },
       { name: "FPS", value: String(job.options.fps), inline: true },
       { name: "Speed", value: job.options.speed === "original" ? "Original" : `${job.options.speed}x`, inline: true },
     )
     .setFooter({ text: `Job ${job.job_id.slice(0, 8)}` });
+  if (detail) embed.addFields({ name: "現在の処理", value: detail, inline: false });
   if (metadata?.player_name) embed.setAuthor({ name: metadata.player_name });
   if (metadata?.artist || metadata?.title) {
     const map = `${metadata.artist ?? "Unknown"} - ${metadata.title ?? "Unknown"}${metadata.difficulty ? ` [${metadata.difficulty}]` : ""}`;
@@ -328,15 +447,53 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
     url = `https://osu.ppy.sh/scores/${play.scoreId}`;
   }
 
-  await interaction.deferReply();
-  let progressMessage: Message | null = null;
-  const client = new RendererClient();
   const options: RenderOptions = {
     resolution: interaction.options.getString("resolution") ?? "1920x1080",
     fps: interaction.options.getInteger("fps") ?? 60,
     speed: interaction.options.getString("speed") ?? "original",
     motionBlur: interaction.options.getBoolean("motion_blur") ?? false,
+    highlight: interaction.options.getBoolean("highlight") ?? false,
   };
+  await executeRender(interaction, url, replay, options);
+}
+
+export async function handleRenderBatchCommand(interaction: ChatInputCommandInteraction) {
+  const raw = interaction.options.getString("urls", true);
+  const urls = raw.match(/https:\/\/osu\.ppy\.sh\/scores\/(?:osu\/|mania\/)?[1-9][0-9]{0,18}/gi) ?? [];
+  const unique = [...new Set(urls)];
+  if (!unique.length) {
+    await interaction.reply({ content: "osu! Score URLを1件以上指定してください。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (unique.length > 20) {
+    await interaction.reply({ content: "一度に追加できるのは20件までです。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const settings = await getControlSettings();
+  const result = await createCloudRenderBatch({
+    scoreUrls: unique,
+    options: {
+      ...settings.values.renderDefaults,
+      highlight: interaction.options.getBoolean("highlight") ?? false,
+    },
+  });
+  const skipped = unique.length - result.created.length;
+  const dashboard = publicAppUrl("/dashboard/render");
+  await interaction.editReply(`✅ ${result.created.length}件を一括キューへ追加しました。${skipped ? ` ${skipped}件は重複のためスキップしました。` : ""}\nBatch: \`${result.batchId.slice(0, 8)}\`\n${dashboard}`);
+}
+
+type RenderCommandInteraction = ChatInputCommandInteraction | MessageContextMenuCommandInteraction;
+
+async function executeRender(
+  interaction: RenderCommandInteraction,
+  url: string | null,
+  replay: Parameters<typeof downloadDiscordReplay>[0] | null,
+  options: RenderOptions,
+) {
+  await interaction.deferReply();
+  let progressMessage: Message | null = null;
+  const client = new RendererClient();
 
   try {
     const health = await client.health();
@@ -381,21 +538,40 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       }
       const nextFingerprint = `${job.status}:${job.progress}:${job.queue_position}:${job.message}:${job.metadata?.score_id ?? ""}`;
       if (nextFingerprint !== fingerprint) {
-        await progressMessage.edit({ content: null, embeds: [renderEmbed(job)] });
+        await progressMessage.edit({ content: null, embeds: [renderEmbed(job)], components: renderJobControls(job, interaction.user.id) });
         fingerprint = nextFingerprint;
       }
       if (job.status === "failed" || job.status === "cancelled") {
-        await progressMessage.edit({ content: ERROR_MESSAGES[job.error_code ?? ""] ?? "❌ レンダリングに失敗しました。Rendererログを確認してください。", embeds: [renderEmbed(job)] });
+        await progressMessage.edit({ content: ERROR_MESSAGES[job.error_code ?? ""] ?? "❌ レンダリングに失敗しました。Rendererログを確認してください。", embeds: [renderEmbed(job)], components: [] });
         return;
       }
       if (job.status === "completed") {
-        await progressMessage.edit({
-          content: job.youtube_url ? "▶️ YouTube投稿を確認しています..." : "🗜️ 動画を圧縮して外部ストレージへアップロードしています...",
-          embeds: [renderEmbed(job)],
-        });
-        const shared = await client.shareVideo(job.job_id);
+        let shared;
+        if (job.youtube_url) {
+          // YouTube has already returned a confirmed video URL. A second /share
+          // request is unnecessary and can leave Discord on a stale status while
+          // local/R2 cleanup or a renderer restart is in progress.
+          shared = {
+            url: job.youtube_url,
+            size: job.output_size_bytes ?? 1,
+            provider: "youtube" as const,
+          };
+        } else {
+          await progressMessage.edit({
+            content: "🗜️ 動画を圧縮して外部ストレージへアップロードしています...",
+            embeds: [renderEmbed(job)],
+          });
+          shared = await client.shareVideo(job.job_id);
+        }
+        let highlightUrl: string | null = null;
+        if (job.highlight_available) {
+          highlightUrl = await client.shareHighlight(job.job_id).then((result) => result.url).catch((error) => {
+            console.error(`[render] highlight share failed job=${job.job_id}:`, error);
+            return null;
+          });
+        }
         const provider = shared.provider === "r2" ? "Cloudflare R2" : shared.provider === "vercel-blob" ? "Vercel Blob" : "YouTube";
-        const components = downloadComponents(shared.url, job.youtube_url, shared.provider);
+        const components = downloadComponents(shared.url, job.youtube_url, shared.provider, highlightUrl);
         const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
         const saved = shared.original_size && shared.original_size > shared.size
           ? ` · 圧縮前 ${fileSizeLabel(shared.original_size)}（${Math.round((1 - shared.size / shared.original_size) * 100)}%削減）`
@@ -406,8 +582,8 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
             ? "\n⚠️ YouTube自動投稿に失敗しました。Rendererログを確認してください。"
             : "";
         const completed = shared.provider === "youtube"
-          ? `✅ YouTubeへ${job.youtube_privacy_status === "public" ? "公開" : job.youtube_privacy_status === "unlisted" ? "限定公開" : "非公開"}で投稿し、ローカル/R2の動画を削除しました。`
-          : `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}`;
+          ? `✅ YouTubeへ${job.youtube_privacy_status === "public" ? "公開" : job.youtube_privacy_status === "unlisted" ? "限定公開" : "非公開"}で投稿し、ローカル/R2の動画を削除しました。${highlightUrl ? "\n✂️ ハイライトクリップも生成しました。" : ""}`
+          : `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}${highlightUrl ? "\n✂️ ハイライトクリップも生成しました。" : ""}`;
         await progressMessage.edit({
           content: completed,
           embeds: [renderEmbed(job)],
@@ -424,6 +600,49 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
     if (progressMessage) await progressMessage.edit(payload);
     else await interaction.editReply(payload);
   }
+}
+
+function scoreUrlFromMessage(interaction: MessageContextMenuCommandInteraction) {
+  const message = interaction.targetMessage;
+  const candidates = [
+    message.content,
+    ...message.embeds.flatMap((embed) => [embed.url, embed.title, embed.description, ...embed.fields.flatMap((field) => [field.name, field.value])]),
+  ].filter((value): value is string => Boolean(value));
+  const pattern = /https:\/\/osu\.ppy\.sh\/scores\/(?:osu\/|mania\/)?[1-9][0-9]{0,18}/i;
+  return candidates.map((value) => value.match(pattern)?.[0] ?? null).find(Boolean) ?? null;
+}
+
+export async function handleRenderMessageCommand(interaction: MessageContextMenuCommandInteraction) {
+  const url = scoreUrlFromMessage(interaction);
+  if (!url) {
+    await interaction.reply({ content: "❌ このメッセージからosu!リザルトURLを見つけられませんでした。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await executeRender(interaction, url, null, {
+    resolution: "1920x1080",
+    fps: 60,
+    speed: "original",
+    motionBlur: false,
+    highlight: false,
+  });
+}
+
+export function isRenderJobButton(interaction: ButtonInteraction) {
+  return interaction.customId.startsWith("render-job:");
+}
+
+export async function handleRenderJobButton(interaction: ButtonInteraction) {
+  const [, jobId, ownerId, action] = interaction.customId.split(":");
+  if (!jobId || !ownerId || !action || interaction.user.id !== ownerId) {
+    await interaction.reply({ content: "このレンダージョブを操作できるのは開始したユーザーだけです。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferUpdate();
+  const client = new RendererClient();
+  if (action === "cancel") await client.cancel(jobId);
+  else if (action === "prioritize") await client.prioritize(jobId);
+  const job = await client.getJob(jobId);
+  await interaction.message.edit({ embeds: [renderEmbed(job)], components: renderJobControls(job, ownerId) });
 }
 
 export async function handleRenderStatusCommand(interaction: ChatInputCommandInteraction) {

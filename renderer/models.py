@@ -118,10 +118,15 @@ class RenderJob:
     options: RenderOptions
     score_url: str | None = None
     uploaded_replay: bytes | None = None
+    suppress_youtube: bool = False
+    bypass_start_policy: bool = True
     status: JobStatus = JobStatus.CREATED
     progress: int = 0
     message: str = "Job created"
     queue_position: int | None = None
+    priority: int = 0
+    estimated_render_seconds: int = 0
+    estimated_wait_seconds: int = 0
     metadata: ScoreMetadata | None = None
     replay_info: ReplayInfo | None = None
     beatmap_path: Path | None = None
@@ -134,6 +139,8 @@ class RenderJob:
     youtube_title: str | None = None
     youtube_privacy_status: str | None = None
     youtube_error: str | None = None
+    highlight_path: Path | None = None
+    thumbnail_path: Path | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     queued_at: datetime | None = None
@@ -160,12 +167,18 @@ class RenderJob:
             "progress": self.progress,
             "message": self.message,
             "queue_position": self.queue_position,
+            "priority": self.priority,
+            "bypass_start_policy": self.bypass_start_policy,
+            "estimated_render_seconds": self.estimated_render_seconds,
+            "estimated_wait_seconds": self.estimated_wait_seconds,
+            "highlight_available": bool(self.highlight_path and self.highlight_path.is_file()),
             "metadata": self.metadata.public_dict() if self.metadata else None,
             "options": {
                 "resolution": self.options.resolution,
                 "fps": self.options.fps,
                 "speed": self.options.speed,
                 "motion_blur": self.options.motion_blur,
+                "highlight": self.options.highlight,
             },
             "error_code": self.error_code,
             "error": self.error,

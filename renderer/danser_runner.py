@@ -32,6 +32,12 @@ def progress_from_line(line: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def overall_render_progress(engine_progress: int) -> int:
+    """Map engine progress to the rendering portion of the full job."""
+    clamped = max(0, min(100, engine_progress))
+    return 5 + round(clamped * 0.85)
+
+
 class DanserRunner:
     def __init__(self, settings: Settings, dependencies: DependencyState) -> None:
         self.settings = settings
@@ -285,10 +291,7 @@ class DanserRunner:
                 # so only danser's precise progress lines may drive job state.
                 percentage = progress_from_line(decoded)
                 if percentage is not None:
-                    if percentage >= 90:
-                        job.update(JobStatus.ENCODING, min(99, percentage), decoded)
-                    else:
-                        job.update(JobStatus.RENDERING, max(1, percentage), decoded)
+                    job.update(JobStatus.RENDERING, overall_render_progress(percentage), decoded)
 
     async def _terminate_tree(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:

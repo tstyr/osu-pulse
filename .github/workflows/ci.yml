@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -12,12 +19,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
+      - run: node scripts/check-publish-secrets.mjs
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
         env:
           DATABASE_URL: postgresql://unused:unused@localhost:5432/unused
+      - run: for script in START_ARCH.sh scripts/*.sh; do bash -n "$script"; done
+
+  renderer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: renderer/requirements.txt
+      - run: pip install -r renderer/requirements.txt
+      - run: python -m unittest discover -s renderer/tests -t .

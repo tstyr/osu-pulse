@@ -75,6 +75,7 @@ if /i "%~1"=="--check" goto :finished
 :stopped
 echo.
 echo Lavalink stopped.
+if /i "%~1"=="--no-pause" goto :finished
 pause
 
 :finished

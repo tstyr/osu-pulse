@@ -31,6 +31,12 @@ export function normalizeScore(
     coverUrl:
       beatmapset?.covers?.["cover@2x"] ?? beatmapset?.covers?.cover ?? null,
     pp: score.pp,
+    starRating: score.beatmap.difficulty_rating ?? null,
+    bpm: score.beatmap.bpm ?? null,
+    beatmapLengthSeconds: score.beatmap.total_length ?? null,
+    ar: score.beatmap.ar ?? null,
+    od: score.beatmap.accuracy ?? null,
+    cs: score.beatmap.cs ?? null,
     accuracy: score.accuracy,
     rank: score.rank,
     maxCombo: score.max_combo,
@@ -61,6 +67,7 @@ export function snapshotFromUser(
     pp: statistics.pp ?? 0,
     accuracy: statistics.hit_accuracy ?? 0,
     playCount: statistics.play_count ?? 0,
+    playTimeSeconds: statistics.play_time ?? 0,
     totalScore: String(statistics.total_score ?? 0),
     rankedScore: String(statistics.ranked_score ?? 0),
     level:

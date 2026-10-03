@@ -2,22 +2,34 @@
 
 osu!の成長記録、Discordへのリザルト通知、毎日のDM、リマインダー、ポモドーロ、Lavalink音楽再生を一つにまとめたDiscord Bot + 非公開コントロールパネルです。
 
-- Web: https://osu-pulse.vercel.app
+- Local Web: http://127.0.0.1:3000 （外部アクセス用URLは `work/public-web-url.txt`）
 - Repository: https://github.com/tstyr/osu-pulse
+
+## 安定性・負荷対策
+
+- 通知は永続Outboxと定期再照合で取りこぼしを復旧し、Discord nonceで短時間の再送重複を防ぎます。PB／異常値条件はスコア分析後にも評価します。
+- 自動レンダーの許可時間待ちはワーカーを占有しません。手動レンダーは許可時間外も実行でき、優先順位変更時の二重実行を防止します。
+- YouTube投稿成功をサムネイル等の後処理より先に記録し、キャンセル／タイムアウトでは関連プロセスを終了します。未投稿動画と処理中ファイルは期限削除から保護します。
+- Web UIのポーリング重複を抑え、キュー操作中の自動更新による巻き戻りを防止します。個人グラフの集計を再利用し、概要統計はDB側でまとめて計算します。
+- Windows／ArchのUSB共有とDB世代管理は[SHARED_STORAGE.md](SHARED_STORAGE.md)を参照してください。環境変数・DBバックアップ・音源・動画はGit管理しません。
+
+検証は`npm test`、`npm run typecheck`、`npm run lint`、`npm run build`、`python -m unittest discover -s renderer/tests -t .`で実行できます。GitHub ActionsでもNode/WebとRendererを自動検証します。
 
 ## 構成
 
-- **Web / API / Cron / Workflow:** Next.js 16 on Vercel
-- **Database:** Neon Postgres + Drizzle ORM
+- **Web / API:** Next.js 16、ローカル起動 + Cloudflare Tunnel（Vercel構成も対応）
+- **Database:** ローカルPostgreSQL + Drizzle ORM（既存Neonへの接続にも対応）
 - **Discord:** discord.js の常駐Gateway worker
 - **osu!:** OAuth Client Credentials + API v2
-- **Music:** Lavalink v4 + official YouTube source plugin
+- **Music:** Lavalink v4 + YouTube source plugin + yt-dlp fallback（検索・YouTube URL・プレイリスト対応）
 
-VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担当します。Discord Gatewayと音声接続は常時接続が必要なため、別の常駐Node.js workerとして実行します。
+現在の運用ではWeb・DB・Bot・RendererをPC上で動かします。Botが統計収集・定期通知を担当し、Vercelの公開URLはCloudflare Tunnel経由でPC上のWeb UIへ中継します。DBポートやDB資格情報は外部公開しません。Discord Gatewayと音声接続は別の常駐Node.js workerとして実行します。
 
 ## 主な機能
 
 - `/osu link` で初回アカウント登録、4モード別のスナップショット保存
+- `/verify`または管理者が設置する`/verify-panel`から、osu!登録（未所持も可）→モード複数選択→言語1つ選択の段階式認証
+- `/track-player`またはWeb UIのデータベース画面から、Discord未連携のosu!プレイヤーを手動追加して継続集計
 - キーフレーズで保護したWeb UIでRenderer、CPU/GPU、メモリ、ディスク、通信量、処理統計を確認
 - Web UIから既定解像度・FPS、圧縮、YouTube公開範囲、R2/osu!資格情報を管理
 - 設定チャンネルへ新規リザルトを自動投稿
@@ -25,9 +37,22 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 - `/remind`、`/pomodoro` とVercel Workflowによる耐久タイマー
 - `/music` から再生・キュー・一時停止・スキップ・音量・停止。再生時には常設ボタン付きパネルを表示し、15秒ごとに進捗を更新
 - `/stats` でBot利用統計
+- `/help`、`/health`、`/panel setup`でヘルプ・稼働診断・再起動後も使える常設クイックパネル
+- `/help`はカテゴリ選択式。Webの「コマンドガイド」では用途・コマンド名・引数を検索し、必須引数と選択肢を確認できます。
+- `/goal`でPP/世界順位の目標と達成DM、`/leaderboard`でサーバー週間PPランキング
+- `/session`で直近45分単位のプレイセッション分析、`/profile-card`で共有用プロフィールカード
+- `/analysis`でスキルレーダー、BPM、AR/OD/CS傾向をDB全件から分析し、`/export`でCSV/JSON保存
+- `/feedback`の要望・不具合受付、エラーID発行、Web運用センターからの原因確認と対応済み管理
+- `/music favorite-add`等のお気に入りと、Bot再起動後のボイス・キュー復元
 - `/render` でosu!standard / maniaのResult URL、登録アカウントの直近Replay、または`.osr`をMP4化
+- Discordメッセージの右クリックからScore URLをレンダーし、待ち時間表示・優先化・キャンセル・任意の30秒ハイライトを利用可能
 - `/render-status` で独立したローカルRendererの状態を確認
-- Renderer完了後、判定・pp・精度・曲名を含むタイトルでYouTubeへ公開投稿（OAuth設定時）
+- `/render-batch`またはWeb UIで最大20件をまとめて追加し、待機列をドラッグ／モバイルの上下ボタンで並べ替え
+- Renderer完了後、判定・pp・精度・曲名を含むタイトルと自動サムネイルでYouTubeへ公開投稿し、判定/PP帯の再生リストへ分類（OAuth・再生リスト設定時）
+- YouTubeタイトル・説明・タグのテンプレート、動画透かし、R2/ローカル共有動画の保持期間をWeb UIから設定
+- `/reports setup`で毎日のサーバー成長レポートと週間表彰、`/admin-log setup`で監査ログとマスク済み全コンソールログをDiscordへ転送
+- 条件付き通知ルール（プレイヤー、モード、判定、PP、精度、MOD、PB、異常値）をWeb運用センターで作成
+- 公開プロフィール`/players/{osu! user ID}`でモード別のPP・順位・精度・セッション・クリック可能なスコア履歴を共有
 - `/server-status setup` でRenderer、CPU/GPU、RAM、ディスク、通信量、動画容量、処理件数を1カテゴリのチャンネル名へ表示
 - 状況カテゴリは15秒ごとに再取得。YouTube未設定時のみ完成動画をCloudflare R2（未設定時はVercel Blob）へアップロード
 - Webの`/dashboard/render`からNeonのジョブを経由してローカルRendererへ依頼し、完成動画はYouTubeリンクで受け取る
@@ -38,9 +63,11 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 `https://osu-pulse.vercel.app`は公開プロフィールを表示せず、管理キーフレーズのログイン画面だけを公開します。ログイン後は次の画面を利用できます。
 
 - **概要:** Renderer接続、14日間の処理本数、成功率、YouTube投稿数、CPU/GPU/RAM/ディスク/通信量、最近のジョブ
-- **レンダー:** Score URLまたは`.osr`からレンダーを依頼し、進捗確認・キャンセル・完成動画を開く
+- **レンダー:** Score URLまたは`.osr`からレンダーを依頼し、一括追加、待機列の優先順変更、進捗確認・キャンセル・完成動画を開く
 - **設定:** 解像度/FPS、最大並列数、GPUエンコーダ、譜面取得、圧縮、YouTube、osu! API、R2を説明付きの折りたたみ項目で管理
-- **データベース:** Neon DB全体容量、テーブル別行数・データ容量・インデックス容量を読み取り専用で確認
+- **データベース:** Neon DB全体容量、テーブル別行数・データ容量・インデックス容量、追跡プレイヤーを確認し、Discord未連携プレイヤーを手動追加
+- **統計:** モード別の全リザルト、PP散布図、判定別マーカー、1対1・全員比較、件数上限なしの履歴表示
+- **運用センター:** Discord告知、条件付き通知、定期レポート、監査／コンソール転送、osu!/YouTube/R2使用量、エラーID、Discordから届いた要望を一括管理
 
 キーフレーズはVercelの`CONTROL_PANEL_KEYPHRASE`で指定します。未設定時は既存の`WEB_RENDER_ACCESS_KEY`を使用します。セッション署名とDB内資格情報の暗号化には`CONTROL_PANEL_SESSION_SECRET`を使い、未設定時は`INTERNAL_API_SECRET`へフォールバックします。秘密値は画面へ再表示せず、AES-256-GCMで暗号化して保存します。
 
@@ -48,15 +75,20 @@ VercelはWeb・API・毎日21:00 JSTの集計・耐久ワークフローを担�
 
 ## ローカル起動
 
-Windowsでは、リポジトリ直下の`start_osu_pulse.bat`をダブルクリックすると、Renderer、Lavalink、Discord Botを別ウィンドウでまとめて起動できます。それぞれ個別に停止・再起動できます。起動前チェックだけ行う場合は次を実行します。
+Windowsでは、リポジトリ直下の`start_osu_pulse.bat`をダブルクリックすると、Local PostgreSQL、Web UI、Renderer、Lavalink、Discord Bot、Cloudflare Tunnel、監視プロセスをまとめて起動できます。起動済みサービスは再利用され、停止中のものだけを依存順に非表示で開始します。起動前チェックと現在の状態確認には次を使います。
 
 ```bat
 start_osu_pulse.bat --check
+start_osu_pulse.bat --status
 ```
+
+コマンドプロンプトから起動して完了後すぐプロンプトへ戻す場合は`start_osu_pulse.bat --no-pause`を使います。起動結果と公開URLは最後に一覧表示され、詳細ログは`work/launcher.log`へ保存されます。Web UIのソースが前回の本番ビルドより新しい場合は、起動前に自動で再ビルドします。
+
+Cloudflare Quick TunnelのURLが変わると、`scripts/sync-vercel-web-proxy.ps1`がVercelの`LOCAL_WEB_ORIGIN`を更新して本番へ自動デプロイします。これによりブラウザでは常に`https://osu-pulse.vercel.app`を使いながら、Web処理とPostgreSQLはPC内に保持できます。PC、Web UI、またはTunnelが停止している間はVercel側からもアクセスできません。同期状況は`work/vercel-proxy-sync.log`で確認できます。
 
 Botだけ起動する場合は`bot/start_bot.bat`、Rendererだけ起動する場合は`renderer/start_renderer.bat`、音楽ノードだけ起動する場合は`lavalink/start_lavalink.bat`を使います。初回のLavalink起動時は公式Lavalink 4.2.2 JAR（約100 MB）をダウンロードし、SHA-256を検証します。Java 17以上が必要です。初回セットアップやWeb開発サーバーの起動は以下のコマンドを使います。
 
-Windowsへのサインイン時に3サービスを非表示で自動起動する場合は、`install_autostart.bat`を一度実行します。既に動いているサービスは重複起動せず、起動記録は`work/autostart.log`へ保存します。解除は`install_autostart.bat -Remove`です。
+Windowsへのサインイン時に各サービスを非表示で自動起動する場合は、`install_autostart.bat`を一度実行します。監視プロセスがLocal PostgreSQL・Renderer・Lavalink・Botを30秒ごとに確認し、3回連続で停止を検出すると5分の再起動クールダウン付きで自動復旧します。記録は`work/watchdog.log`へ保存され、解除は`install_autostart.bat -Remove`です。
 
 ```bash
 npm install
@@ -65,6 +97,8 @@ npm run db:generate
 npm run db:migrate
 npm run dev
 ```
+
+ローカルPostgreSQLへ切り替える場合は、PostgreSQL 17を導入後に`npm run db:configure-local`と`npm run db:migrate`を実行します。元のNeon URLは`.env.local`の`NEON_DATABASE_URL`へ退避されます。Neonの転送量制限が解除された後は`npm run db:import-neon-delta`で、ローカルに存在しない行だけを追加回収できます。
 
 BotコマンドをDiscordへ登録してGateway workerを起動します。
 
@@ -120,6 +154,14 @@ npm run bot:start
 /render account:<pp・判定・STD/MANIA・曲名から選択>
 /render replay:<myplay.osr> resolution:1920x1080 fps:60
 /render-status
+/render-batch urls:<Score URLを空白または改行区切り>
+/session mode:mania
+/profile-card mode:osu!
+/reports setup daily_channel:#daily weekly_channel:#awards
+/admin-log setup audit_channel:#audit console_channel:#console
+/verify
+/verify-panel
+/track-player username:hakaka_aa mode:osu!
 /server-status setup
 /server-status refresh
 /server-status remove
@@ -143,8 +185,8 @@ Webでは`https://osu-pulse.vercel.app`へ管理キーフレーズでログイ�
 - `OSU_CLIENT_ID`, `OSU_CLIENT_SECRET`
 - `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`
 - `INTERNAL_API_SECRET`, `CRON_SECRET`
-- `WEB_APP_URL`
-- 音楽利用時は `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD`
+- `WEB_APP_URL`（公開URL。現在は `https://osu-pulse.vercel.app`）
+- 音楽利用時は `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD`。YouTubeの代替経路にはPATH上の`yt-dlp`を使います。必要なら`YT_DLP_PATH`を指定し、ローカル中継用に長いランダム値の`YT_DLP_PROXY_TOKEN`を設定します。
 - ローカルRenderer利用時は `RENDER_SERVER_URL`, `RENDER_SERVER_TOKEN`
 - Web管理画面では `CONTROL_PANEL_KEYPHRASE`, `CONTROL_PANEL_SESSION_SECRET`（どちらも既存変数へのフォールバックあり）
 - Web Renderer利用時は `RENDER_BRIDGE_TOKEN`, `RENDER_CLOUD_URL` と、R2または `BLOB_READ_WRITE_TOKEN`
@@ -163,10 +205,12 @@ npm run build
 
 ## デプロイ
 
-Webはリンク済みVercelプロジェクトへデプロイします。
+現在のローカル運用では `npm run build` 後にWeb UIを再起動して反映します。Cloudflare Tunnelは同じローカルWeb UIへ接続します。Botのコード変更はBot再起動、スラッシュコマンド定義の変更は `npm run bot:register` で反映します。
+
+Vercelを別途利用する場合のみ、リンク済みプロジェクトへデプロイします。
 
 ```bash
 vercel deploy --prod
 ```
 
-Vercel Functions内ではGateway workerやdanserを起動しません。WebのレンダージョブはNeonへ保存され、起動中のローカルRendererがポーリングして処理します。Gateway worker（Discord Bot）とRendererは独立して起動・停止できます。
+Vercel Functions内ではGateway workerやdanserを起動しません。レンダージョブは設定されたPostgreSQLへ保存され、起動中のローカルRendererがポーリングして処理します。Gateway worker（Discord Bot）とRendererは独立して起動・停止できます。VercelからPCのlocalhostへ直接DB接続することはできないため、現在のローカルDB構成ではローカルWeb UIを利用してください。

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { renderApiError } from "@/lib/render/api";
 import { getBridgeConfiguration } from "@/lib/control/settings";
 import { claimCloudRenderJob, heartbeatRenderer, requireBridgeAccess } from "@/lib/render/server";
+import { automaticRenderingAllowed, renderRequestSource } from "@/lib/render/request-source";
 
 const schema = z.object({
   rendererId: z.string().min(1).max(64),
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
     if (activeCount >= capacity || input.restartRequired) {
       return Response.json({ job: null, configuration });
     }
-    const job = await claimCloudRenderJob(input.rendererId);
+    const job = await claimCloudRenderJob(input.rendererId, automaticRenderingAllowed(input.dependencies));
     if (!job) return Response.json({ job: null, configuration });
     return Response.json({
       job: {
@@ -37,6 +38,7 @@ export async function POST(request: Request) {
         scoreUrl: job.scoreUrl,
         replayData: job.replayData,
         options: job.options,
+        requestSource: renderRequestSource(job),
       },
       configuration,
     });

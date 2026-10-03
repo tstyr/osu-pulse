@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from renderer.danser_runner import DanserRunner, progress_from_line
+from renderer.danser_runner import DanserRunner, overall_render_progress, progress_from_line
 from renderer.models import RenderJob, ScoreMetadata
 from renderer.prerequisites import DependencyState
 from renderer.render_options import RenderOptions
@@ -17,6 +17,11 @@ class DanserProgressTests(unittest.TestCase):
 
     def test_ignores_ffmpeg_percentages(self) -> None:
         self.assertIsNone(progress_from_line("muxing overhead: 0.196085%"))
+
+    def test_maps_engine_progress_to_render_stage(self) -> None:
+        self.assertEqual(overall_render_progress(0), 5)
+        self.assertEqual(overall_render_progress(50), 47)
+        self.assertEqual(overall_render_progress(100), 90)
 
     def test_auto_encoder_prefers_nvenc_then_amf_then_cpu(self) -> None:
         settings = SimpleNamespace(video_encoder="auto")

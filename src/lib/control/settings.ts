@@ -1,5 +1,3 @@
-import "server-only";
-
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 import { eq } from "drizzle-orm";
@@ -11,6 +9,7 @@ import {
   type ControlPanelSecretName,
   type ControlPanelSettingsValue,
 } from "@/db/schema";
+import { autoRenderSettingsSchema, defaultAutoRenderSettings } from "@/lib/control/auto-render-settings";
 
 const SETTINGS_ID = "primary";
 const SECRET_NAMES = [
@@ -19,6 +18,8 @@ const SECRET_NAMES = [
   "YOUTUBE_CLIENT_ID",
   "YOUTUBE_CLIENT_SECRET",
   "YOUTUBE_REFRESH_TOKEN",
+  "SPOTIFY_CLIENT_ID",
+  "SPOTIFY_CLIENT_SECRET",
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",
 ] as const satisfies readonly ControlPanelSecretName[];
@@ -45,6 +46,15 @@ export const controlSettingsSchema = z.object({
     videoCompress: boolFromForm,
     videoCompressQuality: z.coerce.number().int().min(18).max(32),
     videoCompressAudioKbps: z.coerce.number().int().min(64).max(320),
+    watermarkEnabled: boolFromForm.default(false),
+    watermarkText: z.string().trim().max(120).default("osu! Pulse · {player}"),
+    watermarkPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right"]).default("bottom-right"),
+    storageRetentionHours: z.coerce.number().int().min(1).max(8_760).default(168),
+    scheduleEnabled: boolFromForm.default(true),
+    allowedStartTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("01:00"),
+    allowedEndTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("07:00"),
+    idleOnly: boolFromForm.default(true),
+    idleMinutes: z.coerce.number().int().min(1).max(240).default(10),
   }),
   appearance: z.object({
     maniaScrollSpeed: z.coerce.number().int().min(1).max(40),
@@ -68,10 +78,36 @@ export const controlSettingsSchema = z.object({
     privacyStatus: z.enum(["private", "unlisted", "public"]),
     deleteAfterUpload: boolFromForm,
     categoryId: z.string().regex(/^\d{1,8}$/),
+    titleTemplate: z.string().trim().min(1).max(300).default("{rank} | {pp} | {accuracy} | {artist} - {title} [{difficulty}]"),
+    descriptionTemplate: z.string().max(5_000).default("Player: {player}\nMode: {mode}\nMap: {artist} - {title}\nDifficulty: {difficulty}\nMods: {mods}\nResult: {score_url}\n\nRendered automatically by osu! Pulse."),
+    tags: z.array(z.string().trim().min(1).max(100)).max(30).default(["osu!", "osu! replay", "osu! Pulse"]),
+    playlistIds: z.object({
+      x: z.string().max(128),
+      s: z.string().max(128),
+      a: z.string().max(128),
+      pp100: z.string().max(128),
+      pp200: z.string().max(128),
+      pp300: z.string().max(128),
+      pp400: z.string().max(128),
+    }).default({ x: "", s: "", a: "", pp100: "", pp200: "", pp300: "", pp400: "" }),
   }),
   storage: z.object({
     r2Endpoint: z.union([z.literal(""), z.string().url().max(500)]),
     r2Bucket: z.string().max(63),
+  }),
+  autoRender: autoRenderSettingsSchema.default(defaultAutoRenderSettings()),
+  monitoring: z.object({
+    alertsEnabled: boolFromForm,
+    alertChannelId: z.string().regex(/^$|^\d{17,20}$/),
+    osuDailyRequestLimit: z.coerce.number().int().min(100).max(1_000_000),
+    youtubeDailyQuota: z.coerce.number().int().min(1_600).max(10_000_000),
+    r2StorageLimitGb: z.coerce.number().min(0.1).max(100_000),
+  }).default({
+    alertsEnabled: true,
+    alertChannelId: "",
+    osuDailyRequestLimit: 10_000,
+    youtubeDailyQuota: 10_000,
+    r2StorageLimitGb: 25,
   }),
 });
 
@@ -93,8 +129,17 @@ export function defaultControlSettings(): ControlPanelSettingsValue {
       autoDownloadBeatmaps: true,
       beatmapDownloadNoVideo: true,
       videoCompress: true,
-      videoCompressQuality: 24,
-      videoCompressAudioKbps: 160,
+      videoCompressQuality: 26,
+      videoCompressAudioKbps: 128,
+      watermarkEnabled: false,
+      watermarkText: "osu! Pulse · {player}",
+      watermarkPosition: "bottom-right",
+      storageRetentionHours: 24,
+      scheduleEnabled: true,
+      allowedStartTime: "01:00",
+      allowedEndTime: "07:00",
+      idleOnly: true,
+      idleMinutes: 10,
     },
     appearance: {
       maniaScrollSpeed: 30,
@@ -110,10 +155,22 @@ export function defaultControlSettings(): ControlPanelSettingsValue {
       privacyStatus: "public",
       deleteAfterUpload: true,
       categoryId: "20",
+      titleTemplate: "{rank} | {pp} | {accuracy} | {artist} - {title} [{difficulty}]",
+      descriptionTemplate: "Player: {player}\nMode: {mode}\nMap: {artist} - {title}\nDifficulty: {difficulty}\nMods: {mods}\nResult: {score_url}\n\nRendered automatically by osu! Pulse.",
+      tags: ["osu!", "osu! replay", "osu! Pulse"],
+      playlistIds: { x: "", s: "", a: "", pp100: "", pp200: "", pp300: "", pp400: "" },
     },
     storage: {
       r2Endpoint: process.env.R2_ENDPOINT ?? "",
       r2Bucket: process.env.R2_BUCKET ?? "",
+    },
+    autoRender: defaultAutoRenderSettings(),
+    monitoring: {
+      alertsEnabled: true,
+      alertChannelId: "",
+      osuDailyRequestLimit: 10_000,
+      youtubeDailyQuota: 10_000,
+      r2StorageLimitGb: 25,
     },
   };
 }
@@ -207,6 +264,15 @@ export async function getBridgeConfiguration() {
     VIDEO_COMPRESS: String(values.renderer.videoCompress),
     VIDEO_COMPRESS_QUALITY: String(values.renderer.videoCompressQuality),
     VIDEO_COMPRESS_AUDIO_KBPS: String(values.renderer.videoCompressAudioKbps),
+    VIDEO_WATERMARK_ENABLED: String(values.renderer.watermarkEnabled),
+    VIDEO_WATERMARK_TEXT: values.renderer.watermarkText,
+    VIDEO_WATERMARK_POSITION: values.renderer.watermarkPosition,
+    STORAGE_RETENTION_HOURS: String(values.renderer.storageRetentionHours),
+    RENDER_SCHEDULE_ENABLED: String(values.renderer.scheduleEnabled),
+    RENDER_ALLOWED_START_TIME: values.renderer.allowedStartTime,
+    RENDER_ALLOWED_END_TIME: values.renderer.allowedEndTime,
+    RENDER_IDLE_ONLY: String(values.renderer.idleOnly),
+    RENDER_IDLE_MINUTES: String(values.renderer.idleMinutes),
     MANIA_SCROLL_SPEED: String(values.appearance.maniaScrollSpeed),
     MANIA_JUDGMENT_SCALE: String(values.appearance.maniaJudgmentScale),
     MANIA_SCORE_SCALE: String(values.appearance.maniaScoreScale),
@@ -218,6 +284,17 @@ export async function getBridgeConfiguration() {
     YOUTUBE_PRIVACY_STATUS: values.youtube.privacyStatus,
     YOUTUBE_DELETE_AFTER_UPLOAD: String(values.youtube.deleteAfterUpload),
     YOUTUBE_CATEGORY_ID: values.youtube.categoryId,
+    YOUTUBE_TITLE_TEMPLATE: values.youtube.titleTemplate,
+    // Keep the dotenv file one physical line; the renderer expands these again.
+    YOUTUBE_DESCRIPTION_TEMPLATE: values.youtube.descriptionTemplate.replace(/\r?\n/g, "\\n"),
+    YOUTUBE_TAGS: values.youtube.tags.join(","),
+    YOUTUBE_PLAYLIST_X_ID: values.youtube.playlistIds.x,
+    YOUTUBE_PLAYLIST_S_ID: values.youtube.playlistIds.s,
+    YOUTUBE_PLAYLIST_A_ID: values.youtube.playlistIds.a,
+    YOUTUBE_PLAYLIST_PP100_ID: values.youtube.playlistIds.pp100,
+    YOUTUBE_PLAYLIST_PP200_ID: values.youtube.playlistIds.pp200,
+    YOUTUBE_PLAYLIST_PP300_ID: values.youtube.playlistIds.pp300,
+    YOUTUBE_PLAYLIST_PP400_ID: values.youtube.playlistIds.pp400,
   };
   if (values.storage.r2Endpoint) env.R2_ENDPOINT = values.storage.r2Endpoint;
   if (values.storage.r2Bucket) env.R2_BUCKET = values.storage.r2Bucket;

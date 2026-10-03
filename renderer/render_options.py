@@ -41,6 +41,7 @@ class RenderOptions:
     fps: int = 60
     speed: str = "original"
     motion_blur: bool = False
+    highlight: bool = False
 
     @classmethod
     def from_values(
@@ -49,6 +50,7 @@ class RenderOptions:
         fps: object = None,
         speed: object = None,
         motion_blur: object = None,
+        highlight: object = None,
     ) -> "RenderOptions":
         resolution_value = str(resolution or "1920x1080")
         try:
@@ -62,7 +64,7 @@ class RenderOptions:
             raise RenderError(ErrorCode.INVALID_OPTIONS, "Unsupported FPS")
         if speed_value not in ALLOWED_SPEEDS:
             raise RenderError(ErrorCode.INVALID_OPTIONS, "Unsupported speed")
-        return cls(resolution_value, fps_value, speed_value, _parse_bool(motion_blur))
+        return cls(resolution_value, fps_value, speed_value, _parse_bool(motion_blur), _parse_bool(highlight))
 
     @property
     def size(self) -> tuple[int, int]:
@@ -73,4 +75,4 @@ class RenderOptions:
         return ALLOWED_SPEEDS[self.speed]
 
     def signature(self) -> str:
-        return f"{self.resolution}:{self.fps}:{self.speed}:{int(self.motion_blur)}"
+        return f"{self.resolution}:{self.fps}:{self.speed}:{int(self.motion_blur)}:{int(self.highlight)}"

@@ -1,6 +1,9 @@
 # Local renderer runtime and secrets must never be included in deployments.
+.env*
+.vercel/
 renderer/.env
 renderer/.venv/
+renderer/.venv-mania/
 renderer/local/
 renderer/temp/
 renderer/output/
@@ -13,3 +16,7 @@ outputs/
 .git/
 .next/
 coverage/
+bot-audio/
+lavalink/runtime/
+lavalink/plugins/
+lavalink/logs/

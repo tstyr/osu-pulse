@@ -82,6 +82,21 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _time_env(name: str, default: str) -> str:
+    value = os.getenv(name, default).strip()
+    parts = value.split(":")
+    if len(parts) != 2 or not all(part.isascii() and part.isdigit() for part in parts):
+        raise ValueError(f"{name} must use HH:MM")
+    hours, minutes = (int(part) for part in parts)
+    if len(parts[0]) != 2 or len(parts[1]) != 2 or not 0 <= hours <= 23 or not 0 <= minutes <= 59:
+        raise ValueError(f"{name} must use HH:MM")
+    return value
+
+
+def _multiline_env(name: str, default: str) -> str:
+    return os.getenv(name, default).replace(r"\r\n", "\n").replace(r"\n", "\n")
+
+
 def _path_env(name: str, default: Path) -> Path:
     raw = os.getenv(name)
     path = Path(raw).expanduser() if raw else default
@@ -164,20 +179,40 @@ class Settings:
     max_beatmapset_bytes: int = 256 * 1024 * 1024
     stats_path: Path = RENDERER_ROOT / "stats.json"
     video_upload_script: Path = RENDERER_ROOT / "upload_video.mjs"
+    r2_prune_script: Path = RENDERER_ROOT / "prune_r2_videos.mjs"
     video_share_timeout_seconds: int = 7200
     video_compress_enabled: bool = True
     video_compress_quality: int = 24
     video_compress_audio_kbps: int = 160
     video_compress_timeout_seconds: int = 7200
+    video_watermark_enabled: bool = False
+    video_watermark_text: str = "osu! Pulse · {player}"
+    video_watermark_position: str = "bottom-right"
+    storage_retention_hours: int = 24
+    render_schedule_enabled: bool = True
+    render_allowed_start_time: str = "01:00"
+    render_allowed_end_time: str = "07:00"
+    render_idle_only: bool = True
+    render_idle_minutes: int = 10
     youtube_auto_upload: bool = False
     youtube_client_id: str | None = None
     youtube_client_secret: str | None = None
     youtube_refresh_token: str | None = None
     youtube_privacy_status: str = "unlisted"
     youtube_category_id: str = "20"
+    youtube_title_template: str = "{rank} | {pp} | {accuracy} | {artist} - {title} [{difficulty}]"
+    youtube_description_template: str = "Player: {player}\nMode: {mode}\nMap: {artist} - {title}\nDifficulty: {difficulty}\nMods: {mods}\nResult: {score_url}\n\nRendered automatically by osu! Pulse."
+    youtube_tags: tuple[str, ...] = ("osu!", "osu! replay", "osu! Pulse")
     youtube_upload_timeout_seconds: int = 7200
     youtube_chunk_bytes: int = 8 * 1024 * 1024
     youtube_delete_after_upload: bool = False
+    youtube_playlist_x_id: str | None = None
+    youtube_playlist_s_id: str | None = None
+    youtube_playlist_a_id: str | None = None
+    youtube_playlist_pp100_id: str | None = None
+    youtube_playlist_pp200_id: str | None = None
+    youtube_playlist_pp300_id: str | None = None
+    youtube_playlist_pp400_id: str | None = None
     youtube_upload_registry_path: Path = RENDERER_ROOT / "youtube-uploads.json"
     r2_delete_script: Path = RENDERER_ROOT / "delete_r2_video.mjs"
     control_panel_config_version: int = 0
@@ -242,15 +277,34 @@ class Settings:
             video_compress_quality=_bounded_int_env("VIDEO_COMPRESS_QUALITY", 24, minimum=18, maximum=32),
             video_compress_audio_kbps=_bounded_int_env("VIDEO_COMPRESS_AUDIO_KBPS", 160, minimum=64, maximum=320),
             video_compress_timeout_seconds=_int_env("VIDEO_COMPRESS_TIMEOUT_SECONDS", 7200, minimum=60),
+            video_watermark_enabled=_bool_env("VIDEO_WATERMARK_ENABLED", False),
+            video_watermark_text=(os.getenv("VIDEO_WATERMARK_TEXT") or "osu! Pulse · {player}").strip()[:120],
+            video_watermark_position=(os.getenv("VIDEO_WATERMARK_POSITION") or "bottom-right").strip().lower(),
+            storage_retention_hours=_bounded_int_env("STORAGE_RETENTION_HOURS", 24, minimum=1, maximum=8760),
+            render_schedule_enabled=_bool_env("RENDER_SCHEDULE_ENABLED", True),
+            render_allowed_start_time=_time_env("RENDER_ALLOWED_START_TIME", "01:00"),
+            render_allowed_end_time=_time_env("RENDER_ALLOWED_END_TIME", "07:00"),
+            render_idle_only=_bool_env("RENDER_IDLE_ONLY", True),
+            render_idle_minutes=_bounded_int_env("RENDER_IDLE_MINUTES", 10, minimum=1, maximum=240),
             youtube_auto_upload=_bool_env("YOUTUBE_AUTO_UPLOAD", False),
             youtube_client_id=os.getenv("YOUTUBE_CLIENT_ID") or None,
             youtube_client_secret=os.getenv("YOUTUBE_CLIENT_SECRET") or None,
             youtube_refresh_token=os.getenv("YOUTUBE_REFRESH_TOKEN") or None,
             youtube_privacy_status=_youtube_privacy_status(),
             youtube_category_id=_youtube_category_id(),
+            youtube_title_template=(os.getenv("YOUTUBE_TITLE_TEMPLATE") or "{rank} | {pp} | {accuracy} | {artist} - {title} [{difficulty}]").strip()[:300],
+            youtube_description_template=_multiline_env("YOUTUBE_DESCRIPTION_TEMPLATE", "Player: {player}\nMode: {mode}\nMap: {artist} - {title}\nDifficulty: {difficulty}\nMods: {mods}\nResult: {score_url}\n\nRendered automatically by osu! Pulse.")[:5000],
+            youtube_tags=tuple(tag.strip()[:100] for tag in (os.getenv("YOUTUBE_TAGS") or "osu!,osu! replay,osu! Pulse").split(",") if tag.strip())[:30],
             youtube_upload_timeout_seconds=_int_env("YOUTUBE_UPLOAD_TIMEOUT_SECONDS", 7200, minimum=60),
             youtube_chunk_bytes=_youtube_chunk_bytes(),
             youtube_delete_after_upload=_bool_env("YOUTUBE_DELETE_AFTER_UPLOAD", False),
+            youtube_playlist_x_id=os.getenv("YOUTUBE_PLAYLIST_X_ID") or None,
+            youtube_playlist_s_id=os.getenv("YOUTUBE_PLAYLIST_S_ID") or None,
+            youtube_playlist_a_id=os.getenv("YOUTUBE_PLAYLIST_A_ID") or None,
+            youtube_playlist_pp100_id=os.getenv("YOUTUBE_PLAYLIST_PP100_ID") or None,
+            youtube_playlist_pp200_id=os.getenv("YOUTUBE_PLAYLIST_PP200_ID") or None,
+            youtube_playlist_pp300_id=os.getenv("YOUTUBE_PLAYLIST_PP300_ID") or None,
+            youtube_playlist_pp400_id=os.getenv("YOUTUBE_PLAYLIST_PP400_ID") or None,
             youtube_upload_registry_path=_path_env("YOUTUBE_UPLOAD_REGISTRY_PATH", RENDERER_ROOT / "youtube-uploads.json"),
             r2_delete_script=(RENDERER_ROOT / "delete_r2_video.mjs").resolve(),
             control_panel_config_version=_int_env("CONTROL_PANEL_CONFIG_VERSION", 0, minimum=0),

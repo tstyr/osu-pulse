@@ -22,6 +22,7 @@ function formValues(form: FormData) {
     fps: form.get("fps"),
     speed: form.get("speed"),
     motionBlur: form.get("motionBlur"),
+    highlight: form.get("highlight"),
   };
 }
 export async function POST(request: Request) {
@@ -38,9 +39,10 @@ export async function POST(request: Request) {
     let replayData: string | undefined;
     let source: Uint8Array | string;
     let options;
+    let scheduledAt: Date | null;
 
     if (contentType.startsWith("application/json")) {
-      const body = z.object({ type: z.literal("score_url"), url: z.string().max(2_000) })
+      const body = z.object({ type: z.literal("score_url"), url: z.string().max(2_000), scheduledAt: z.string().datetime({ offset: true }).nullable().optional() })
         .and(renderOptionsSchema)
         .parse(await request.json());
       inputType = "score_url";
@@ -51,7 +53,12 @@ export async function POST(request: Request) {
         fps: body.fps,
         speed: body.speed,
         motionBlur: body.motionBlur,
+        highlight: body.highlight,
       };
+      if (body.scheduledAt && new Date(body.scheduledAt).getTime() > Date.now() + 31 * 86_400_000) {
+        throw new RenderApiError("INVALID_SCHEDULE", "予約できるのは31日後までです。", 400);
+      }
+      scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
     } else if (contentType.startsWith("multipart/form-data")) {
       const form = await request.formData();
       if (form.get("type") !== "replay") {
@@ -69,6 +76,7 @@ export async function POST(request: Request) {
       source = bytes;
       replayData = Buffer.from(bytes).toString("base64");
       options = renderOptionsSchema.parse(formValues(form));
+      scheduledAt = null;
     } else {
       throw new RenderApiError("UNSUPPORTED_MEDIA_TYPE", "JSON または multipart/form-data を使用してください。", 415);
     }
@@ -82,6 +90,7 @@ export async function POST(request: Request) {
       scoreUrl,
       replayData,
       options,
+      scheduledAt,
     });
     return Response.json({ job: publicJob(job), jobToken: token }, { status: 202 });
   } catch (error) {

@@ -2,15 +2,17 @@ import "server-only";
 
 import { count, desc, eq, gte, inArray, sql } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { databaseProviderName, databaseResultRows, getDb } from "@/db";
 import {
   accounts,
   cloudRenderJobs,
   discordAccountLinks,
   guildSettings,
+  manuallyTrackedAccounts,
   renderVideos,
 } from "@/db/schema";
 import { rendererStatus } from "@/lib/render/server";
+import { cachedAsync } from "@/lib/async-cache";
 
 const ACTIVE_RENDER_STATUSES = [
   "queued",
@@ -36,15 +38,14 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export async function getDashboardOverview() {
+async function buildDashboardOverview() {
   const db = getDb();
-  const since = new Date(Date.now() - 13 * 24 * 60 * 60 * 1_000);
+  const todayJst = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10);
+  const since = new Date(Date.parse(`${todayJst}T00:00:00+09:00`) - 13 * 24 * 60 * 60 * 1_000);
+  const renderDay = sql<string>`to_char(${cloudRenderJobs.createdAt} at time zone 'Asia/Tokyo', 'YYYY-MM-DD')`;
   const [
     renderer,
-    totalRows,
-    completedRows,
-    failedRows,
-    activeRows,
+    renderSummary,
     uploadedRows,
     accountRows,
     linkRows,
@@ -53,18 +54,25 @@ export async function getDashboardOverview() {
     recentJobs,
   ] = await Promise.all([
     rendererStatus(),
-    db.select({ value: count() }).from(cloudRenderJobs),
-    db.select({ value: count() }).from(cloudRenderJobs).where(eq(cloudRenderJobs.status, "completed")),
-    db.select({ value: count() }).from(cloudRenderJobs).where(eq(cloudRenderJobs.status, "failed")),
-    db.select({ value: count() }).from(cloudRenderJobs).where(inArray(cloudRenderJobs.status, [...ACTIVE_RENDER_STATUSES])),
+    db.select({
+      total: count(),
+      completed: sql<number>`count(*) filter (where ${eq(cloudRenderJobs.status, "completed")})`.mapWith(Number),
+      failed: sql<number>`count(*) filter (where ${eq(cloudRenderJobs.status, "failed")})`.mapWith(Number),
+      active: sql<number>`count(*) filter (where ${inArray(cloudRenderJobs.status, [...ACTIVE_RENDER_STATUSES])})`.mapWith(Number),
+    }).from(cloudRenderJobs),
     db.select({ value: count() }).from(renderVideos).where(eq(renderVideos.status, "active")),
     db.select({ value: count() }).from(accounts),
     db.select({ value: count() }).from(discordAccountLinks),
     db.select({ value: count() }).from(guildSettings),
-    db.select({ createdAt: cloudRenderJobs.createdAt, status: cloudRenderJobs.status })
+    db.select({
+      date: renderDay,
+      total: count(),
+      completed: sql<number>`count(*) filter (where ${eq(cloudRenderJobs.status, "completed")})`.mapWith(Number),
+      failed: sql<number>`count(*) filter (where ${eq(cloudRenderJobs.status, "failed")})`.mapWith(Number),
+    })
       .from(cloudRenderJobs)
       .where(gte(cloudRenderJobs.createdAt, since))
-      .orderBy(cloudRenderJobs.createdAt),
+      .groupBy(renderDay),
     db.select({
       id: cloudRenderJobs.id,
       status: cloudRenderJobs.status,
@@ -79,21 +87,20 @@ export async function getDashboardOverview() {
     }).from(cloudRenderJobs).orderBy(desc(cloudRenderJobs.createdAt)).limit(8),
   ]);
 
-  const completed = completedRows[0]?.value ?? 0;
-  const failed = failedRows[0]?.value ?? 0;
+  const completed = renderSummary[0]?.completed ?? 0;
+  const failed = renderSummary[0]?.failed ?? 0;
   const terminal = completed + failed;
   const trend = new Map<string, { date: string; completed: number; failed: number; total: number }>();
   for (let offset = 0; offset < 14; offset += 1) {
-    const date = new Date(since.getTime() + offset * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+    const date = new Date(since.getTime() + 9 * 3_600_000 + offset * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
     trend.set(date, { date, completed: 0, failed: 0, total: 0 });
   }
   for (const row of trendRows) {
-    const date = row.createdAt.toISOString().slice(0, 10);
-    const bucket = trend.get(date);
+    const bucket = trend.get(row.date);
     if (!bucket) continue;
-    bucket.total += 1;
-    if (row.status === "completed") bucket.completed += 1;
-    if (row.status === "failed") bucket.failed += 1;
+    bucket.total = row.total;
+    bucket.completed = row.completed;
+    bucket.failed = row.failed;
   }
 
   const dependencies = objectValue(renderer.dependencies);
@@ -102,6 +109,7 @@ export async function getDashboardOverview() {
 
   return {
     generatedAt: new Date().toISOString(),
+    databaseProvider: databaseProviderName(),
     renderer: {
       online: renderer.online,
       status: renderer.status,
@@ -118,6 +126,8 @@ export async function getDashboardOverview() {
     system: {
       cpuPercent: numberValue(system.cpu_percent),
       gpuPercent: system.gpu_percent === null || system.gpu_percent === undefined ? null : numberValue(system.gpu_percent),
+      cpuTemperatureC: system.cpu_temperature_c === null || system.cpu_temperature_c === undefined ? null : numberValue(system.cpu_temperature_c),
+      gpuTemperatureC: system.gpu_temperature_c === null || system.gpu_temperature_c === undefined ? null : numberValue(system.gpu_temperature_c),
       memoryUsedBytes: numberValue(system.memory_used_bytes),
       memoryTotalBytes: numberValue(system.memory_total_bytes),
       memoryPercent: numberValue(system.memory_percent),
@@ -129,10 +139,10 @@ export async function getDashboardOverview() {
       uptimeSeconds: numberValue(system.uptime_seconds),
     },
     renders: {
-      total: totalRows[0]?.value ?? 0,
+      total: renderSummary[0]?.total ?? 0,
       completed,
       failed,
-      active: activeRows[0]?.value ?? 0,
+      active: renderSummary[0]?.active ?? 0,
       successRate: terminal ? Math.round((completed / terminal) * 1_000) / 10 : 100,
       youtubeUploaded: uploadedRows[0]?.value ?? 0,
       localProcessed: numberValue(renderStats.processed_total),
@@ -153,6 +163,7 @@ export async function getDashboardOverview() {
   };
 }
 
+export const getDashboardOverview = cachedAsync(buildDashboardOverview, 3_000);
 export type DashboardOverview = Awaited<ReturnType<typeof getDashboardOverview>>;
 
 type DatabaseInfoRow = {
@@ -172,7 +183,7 @@ type TableInfoRow = {
 
 export async function getDatabaseDetails() {
   const db = getDb();
-  const [databaseResult, tablesResult] = await Promise.all([
+  const [databaseResult, tablesResult, trackedRows] = await Promise.all([
     db.execute<DatabaseInfoRow>(sql`
       select
         current_database() as database_name,
@@ -190,8 +201,50 @@ export async function getDatabaseDetails() {
       from pg_stat_user_tables
       order by pg_total_relation_size(relid) desc, relname asc
     `),
+    db.select({
+      id: accounts.id,
+      osuUserId: accounts.osuUserId,
+      username: accounts.username,
+      countryCode: accounts.countryCode,
+      primaryMode: accounts.primaryMode,
+      createdAt: accounts.createdAt,
+      manualAccountId: manuallyTrackedAccounts.accountId,
+      discordUserId: discordAccountLinks.discordUserId,
+    })
+      .from(accounts)
+      .leftJoin(manuallyTrackedAccounts, eq(manuallyTrackedAccounts.accountId, accounts.id))
+      .leftJoin(discordAccountLinks, eq(discordAccountLinks.accountId, accounts.id))
+      .orderBy(desc(accounts.createdAt)),
   ]);
-  const info = databaseResult.rows[0];
+  const info = databaseResultRows<DatabaseInfoRow>(databaseResult)[0];
+  const tableRows = databaseResultRows<TableInfoRow>(tablesResult);
+  const trackedAccounts = new Map<string, {
+    id: string;
+    osuUserId: number;
+    username: string;
+    countryCode: string | null;
+    primaryMode: string;
+    manuallyTracked: boolean;
+    discordLinks: number;
+    createdAt: string;
+  }>();
+  for (const row of trackedRows) {
+    const current = trackedAccounts.get(row.id);
+    if (current) {
+      if (row.discordUserId) current.discordLinks += 1;
+      continue;
+    }
+    trackedAccounts.set(row.id, {
+      id: row.id,
+      osuUserId: row.osuUserId,
+      username: row.username,
+      countryCode: row.countryCode,
+      primaryMode: row.primaryMode,
+      manuallyTracked: Boolean(row.manualAccountId),
+      discordLinks: row.discordUserId ? 1 : 0,
+      createdAt: row.createdAt.toISOString(),
+    });
+  }
   return {
     generatedAt: new Date().toISOString(),
     database: {
@@ -199,15 +252,16 @@ export async function getDatabaseDetails() {
       user: info?.database_user ?? "unknown",
       sizeBytes: numberValue(info?.database_size_bytes),
       version: info?.postgres_version?.split(" on ")[0] ?? "PostgreSQL",
-      provider: "Neon Postgres",
+      provider: databaseProviderName(),
     },
-    tables: tablesResult.rows.map((row) => ({
+    tables: tableRows.map((row) => ({
       name: row.table_name,
       approximateRows: numberValue(row.approximate_rows),
       dataBytes: numberValue(row.data_bytes),
       indexBytes: numberValue(row.index_bytes),
       totalBytes: numberValue(row.total_bytes),
     })),
+    trackedAccounts: [...trackedAccounts.values()],
   };
 }
 

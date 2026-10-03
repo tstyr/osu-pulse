@@ -12,8 +12,11 @@ import {
   Play,
   RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import useSWR from "swr";
+import { liveRequestOptions, RequestError, requestJson } from "@/lib/client/request-json";
+import { RefreshNotice } from "@/components/control-panel/refresh-notice";
 
 import type { CloudRenderOptions } from "@/db/schema";
 import type { CloudRenderStatus } from "@/lib/render/constants";
@@ -93,70 +96,53 @@ function resultName(metadata: Record<string, unknown> | null) {
   return values.length ? `${values.join(" — ")}${difficulty}` : null;
 }
 
+async function readJob([url, token]: readonly [string, string]): Promise<{ job: RenderJob }> {
+  const response = await fetch(url, {
+    headers: { "X-Render-Job-Token": token },
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new RequestError(errorMessage(payload, "ジョブ状態を取得できません。"), response.status);
+  return payload;
+}
+
 export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
   const [mode, setMode] = useState<"score_url" | "replay">("score_url");
-  const [renderer, setRenderer] = useState<RendererStatus | null>(null);
-  const [job, setJob] = useState<RenderJob | null>(null);
-  const [jobToken, setJobToken] = useState("");
+  const [trackedJob, setTrackedJob] = useState<{ jobId: string; jobToken: string; initial?: RenderJob } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
-
-  const checkRenderer = useCallback(async () => {
-    setChecking(true);
-    try {
-      const response = await fetch("/api/render/status", { cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(errorMessage(payload, "Renderer状態を取得できません。"));
-      setRenderer(payload as RendererStatus);
-      setError("");
-    } catch (caught) {
-      setRenderer(null);
-      setError(caught instanceof Error ? caught.message : "接続確認に失敗しました。");
-    } finally {
-      setChecking(false);
-    }
-  }, []);
-
-  const fetchJob = useCallback(async (id: string, token: string) => {
-    const response = await fetch(`/api/render/jobs/${encodeURIComponent(id)}`, {
-      headers: { "X-Render-Job-Token": token },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(errorMessage(payload, "ジョブ状態を取得できません。"));
-    const next = payload.job as RenderJob;
-    setJob(next);
-    return next;
-  }, []);
+  const rendererQuery = useSWR<RendererStatus>("/api/render/status", requestJson, {
+    ...liveRequestOptions,
+    refreshInterval: 10_000,
+  });
+  const progress = useSWR<{ job: RenderJob }>(
+    trackedJob ? [`/api/render/jobs/${encodeURIComponent(trackedJob.jobId)}`, trackedJob.jobToken] as const : null,
+    readJob,
+    {
+      ...liveRequestOptions,
+      keepPreviousData: false,
+      fallbackData: trackedJob?.initial ? { job: trackedJob.initial } : undefined,
+      refreshInterval: (data) => data && TERMINAL.has(data.job.status) ? 0 : 2_500,
+      shouldRetryOnError: (caught) => !(caught instanceof RequestError && [401, 403, 404].includes(caught.status)),
+    },
+  );
+  const renderer = rendererQuery.data;
+  const checking = rendererQuery.isValidating;
+  const job = progress.data?.job ?? trackedJob?.initial ?? null;
+  const checkRenderer = () => rendererQuery.mutate().catch(() => undefined);
 
   useEffect(() => {
     const initialize = window.setTimeout(() => {
-      void checkRenderer();
       const saved = loadStoredJob();
-      if (saved) {
-        setJobToken(saved.jobToken);
-        void fetchJob(saved.jobId, saved.jobToken).catch(clearStoredJob);
-      }
+      if (saved) setTrackedJob(saved);
     }, 0);
     return () => window.clearTimeout(initialize);
-  }, [checkRenderer, fetchJob]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => void checkRenderer(), 10_000);
-    return () => window.clearInterval(timer);
-  }, [checkRenderer]);
-
-  useEffect(() => {
-    if (!job || !jobToken || TERMINAL.has(job.status)) return;
-    const timer = window.setInterval(() => {
-      void fetchJob(job.jobId, jobToken).catch((caught) => setError(caught instanceof Error ? caught.message : "進捗更新に失敗しました。"));
-    }, 2_500);
-    return () => window.clearInterval(timer);
-  }, [fetchJob, job, jobToken]);
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || (trackedJob && (progress.isLoading || (job && !TERMINAL.has(job.status))))) return;
     setBusy(true);
     setError("");
     try {
@@ -165,6 +151,7 @@ export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
       if (mode === "score_url") {
         response = await fetch("/api/render/jobs", {
           method: "POST",
+          signal: AbortSignal.timeout(60_000),
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             type: "score_url",
@@ -173,18 +160,19 @@ export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
             fps: form.get("fps"),
             speed: form.get("speed"),
             motionBlur: form.get("motionBlur") === "on",
+            highlight: form.get("highlight") === "on",
+            scheduledAt: form.get("scheduledAt") ? new Date(String(form.get("scheduledAt"))).toISOString() : null,
           }),
         });
       } else {
         form.set("type", "replay");
-        response = await fetch("/api/render/jobs", { method: "POST", body: form });
+        response = await fetch("/api/render/jobs", { method: "POST", body: form, signal: AbortSignal.timeout(60_000) });
       }
       const payload = await response.json();
       if (!response.ok) throw new Error(errorMessage(payload, "レンダーを開始できませんでした。"));
       const nextJob = payload.job as RenderJob;
       const nextToken = payload.jobToken as string;
-      setJob(nextJob);
-      setJobToken(nextToken);
+      setTrackedJob({ jobId: nextJob.jobId, jobToken: nextToken, initial: nextJob });
       storeJob(nextJob.jobId, nextToken);
       await checkRenderer();
     } catch (caught) {
@@ -195,16 +183,20 @@ export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
   }
 
   async function cancelJob() {
-    if (!job || !jobToken) return;
+    if (!job || !trackedJob) return;
     setBusy(true);
+    setError("");
     try {
       const response = await fetch(`/api/render/jobs/${encodeURIComponent(job.jobId)}`, {
         method: "DELETE",
-        headers: { "X-Render-Job-Token": jobToken },
+        headers: { "X-Render-Job-Token": trackedJob.jobToken },
+        signal: AbortSignal.timeout(30_000),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(errorMessage(payload, "キャンセルできませんでした。"));
-      setJob(payload.job as RenderJob);
+      await progress.mutate({ job: payload.job as RenderJob }, { revalidate: false });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "キャンセルできませんでした。");
     } finally {
       setBusy(false);
     }
@@ -214,9 +206,19 @@ export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
   return (
     <div>
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div><p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f48120]">Replay renderer</p><h1 className="mt-1 text-2xl font-semibold tracking-[-0.03em]">レンダーを開始</h1><p className="mt-1 text-sm text-[#6f7a8c]">Botを起動していなくても、ローカルRendererがオンラインなら利用できます。</p></div>
+        <div><p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f48120]">Replay renderer</p><h1 className="mt-1 text-2xl font-semibold tracking-[-0.03em]">レンダーを開始</h1><p className="mt-1 text-sm text-[#6f7a8c]">Botを起動していなくても利用できます。手動レンダーはスマート実行時間の対象外で、いつでも開始します。</p></div>
         <button type="button" onClick={() => void checkRenderer()} disabled={checking} className="inline-flex h-9 items-center gap-2 rounded-md border border-[#d5dae2] bg-white px-3 text-xs font-medium text-[#4f5a6b] hover:bg-[#f7f8f9]"><RefreshCw className={`size-3.5 ${checking ? "animate-spin" : ""}`} /> 接続更新</button>
       </div>
+
+      <RefreshNotice error={rendererQuery.error} retry={() => { void checkRenderer(); }} />
+      <RefreshNotice error={progress.error} retry={() => {
+        if (progress.error instanceof RequestError && progress.error.status === 404) {
+          clearStoredJob();
+          setTrackedJob(null);
+        } else {
+          void progress.mutate().catch(() => undefined);
+        }
+      }} />
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
         <section className="cp-panel overflow-hidden">
@@ -242,7 +244,9 @@ export function WebRenderConsole({ defaults }: { defaults: RenderDefaults }) {
               <label className="cp-label">再生速度<select name="speed" defaultValue={defaults.speed} className="cp-select"><option value="original">Original</option><option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1.0">1.0x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2.0">2.0x</option></select></label>
             </div>
             <label className="mt-4 flex items-center gap-2 text-xs font-medium text-[#4e596b]"><input name="motionBlur" type="checkbox" defaultChecked={defaults.motionBlur} className="size-4 accent-[#f48120]" /> Motion blurを使用</label>
-            <button type="submit" disabled={busy || !renderer?.online || running} className="cp-button-primary mt-6 w-full !min-h-11">{busy ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />} レンダーを開始</button>
+            <label className="mt-2 flex items-center gap-2 text-xs font-medium text-[#4e596b]"><input name="highlight" type="checkbox" className="size-4 accent-[#f48120]" /> 終盤30秒のハイライトも生成</label>
+            {mode === "score_url" ? <label className="cp-label mt-4">予約時刻（空欄ならすぐ開始）<input name="scheduledAt" type="datetime-local" className="cp-input" /></label> : null}
+            <button type="submit" disabled={busy || !renderer?.online || running || Boolean(trackedJob && progress.isLoading)} className="cp-button-primary mt-6 w-full !min-h-11">{busy ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />} レンダーを開始</button>
             {error ? <p role="alert" className="mt-4 flex gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700"><AlertCircle className="mt-0.5 size-3.5 shrink-0" /> {error}</p> : null}
           </form>
         </section>

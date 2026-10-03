@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { and, asc, count, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDb } from "@/db";
@@ -10,11 +10,13 @@ import { hasControlPanelSession } from "@/lib/control/auth";
 import {
   cloudRendererState,
   cloudRenderJobs,
+  controlPanelSettings,
   renderVideos,
   type CloudRenderJob,
   type CloudRenderMetadata,
   type CloudRenderOptions,
 } from "@/db/schema";
+import { recordRendererMetricSample } from "@/db/advanced-features";
 
 import {
   CLOUD_RENDER_LEASE_SECONDS,
@@ -28,10 +30,14 @@ import {
 } from "./constants";
 export { parseScoreUrl, RenderApiError } from "./score-url";
 import { RenderApiError } from "./score-url";
+import { isAllowedCompletedVideoUrl } from "./video-url";
+import { renderRequestSource } from "./request-source";
 
 const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
 );
+
+export { createCloudCompositionJob, createCloudRenderBatch } from "@/db/render-queue-repository";
 
 export const renderOptionsSchema = z.object({
   resolution: z.enum(RENDER_RESOLUTIONS).default("1920x1080"),
@@ -39,6 +45,10 @@ export const renderOptionsSchema = z.object({
   speed: z.enum(RENDER_SPEEDS).default("original"),
   motionBlur: z.preprocess(
     (value) => value === true || value === "true" || value === "1" || value === "on",
+    z.boolean(),
+  ).default(false),
+  highlight: z.preprocess(
+    (value) => value === true || value === "true" || value === "on" || value === "1",
     z.boolean(),
   ).default(false),
 });
@@ -113,6 +123,7 @@ export function requireJobToken(request: Request, job: CloudRenderJob) {
 }
 
 export function publicJob(job: CloudRenderJob) {
+  const requestSource = renderRequestSource(job);
   return {
     jobId: job.id,
     status: job.status,
@@ -125,20 +136,28 @@ export function publicJob(job: CloudRenderJob) {
     errorCode: job.errorCode,
     error: job.error,
     cancelRequested: job.cancelRequested,
+    priority: job.priority,
+    batchId: job.batchId,
+    scheduledAt: job.scheduledAt?.toISOString() ?? null,
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
     completedAt: job.completedAt?.toISOString() ?? null,
     expiresAt: job.expiresAt?.toISOString() ?? null,
+    requestSource,
   };
 }
 
 export async function createCloudRenderJob(input: {
   tokenHash: string;
-  inputType: "score_url" | "replay";
+  inputType: "score_url" | "replay" | "composition";
   sourceHash: string;
   scoreUrl?: string;
   replayData?: string;
   options: CloudRenderOptions;
+  priority?: number;
+  batchId?: string;
+  requestedByDiscordUserId?: string | null;
+  scheduledAt?: Date | null;
 }) {
   const db = getDb();
   const [active] = await db
@@ -165,12 +184,35 @@ export async function createCloudRenderJob(input: {
     scoreUrl: input.scoreUrl,
     replayData: input.replayData,
     options: input.options,
+    priority: input.priority ?? 0,
+    batchId: input.batchId,
+    requestedByDiscordUserId: input.requestedByDiscordUserId ?? null,
+    scheduledAt: input.scheduledAt ?? null,
+    metadata: { request_source: input.scheduledAt ? "scheduled" : "manual" },
+    message: input.scheduledAt ? "予約時刻まで待機中" : undefined,
   }).returning();
   return created;
 }
 
 export async function getCloudRenderJob(id: string) {
   return getDb().query.cloudRenderJobs.findFirst({ where: eq(cloudRenderJobs.id, id) });
+}
+
+export async function listCloudRenderQueue() {
+  const rows = await getDb().select().from(cloudRenderJobs).where(
+    inArray(cloudRenderJobs.status, ACTIVE_STATUSES),
+  ).orderBy(desc(cloudRenderJobs.priority), asc(cloudRenderJobs.createdAt));
+  return rows.map(publicJob);
+}
+
+export async function reorderCloudRenderQueue(jobIds: string[]) {
+  const unique = [...new Set(jobIds)].slice(0, 100);
+  const db = getDb();
+  await Promise.all(unique.map((id, index) => db.update(cloudRenderJobs).set({
+    priority: unique.length - index,
+    updatedAt: new Date(),
+  }).where(and(eq(cloudRenderJobs.id, id), eq(cloudRenderJobs.status, "queued")))));
+  return listCloudRenderQueue();
 }
 
 export async function cancelCloudRenderJob(job: CloudRenderJob) {
@@ -213,6 +255,11 @@ export async function heartbeatRenderer(input: {
     target: cloudRendererState.id,
     set: values,
   });
+  await recordRendererMetricSample({
+    rendererId: input.rendererId,
+    dependencies: input.dependencies,
+    queueSize: input.queueSize,
+  });
 }
 
 export async function syncRenderVideos(inputs: z.infer<typeof renderVideoSyncSchema>[]) {
@@ -247,8 +294,21 @@ export async function syncRenderVideos(inputs: z.infer<typeof renderVideoSyncSch
       uploadedAt: sql`excluded.uploaded_at`,
       lastSyncedAt: now,
       updatedAt: now,
+      status: sql`excluded.status`,
+      deletedAt: sql`excluded.deleted_at`,
     },
   });
+  await Promise.all(values.map((video) => db.update(cloudRenderJobs).set({
+    videoUrl: video.url,
+    videoSize: video.sourceSize,
+    message: video.status === "deleted"
+      ? "YouTube投稿済みの動画を削除しました"
+      : "YouTubeへの投稿が完了しました",
+    updatedAt: now,
+  }).where(and(
+    eq(cloudRenderJobs.localJobId, video.jobId),
+    eq(cloudRenderJobs.status, "completed"),
+  ))));
 }
 
 export async function pendingRenderVideoCommand() {
@@ -273,7 +333,7 @@ export async function completeRenderVideoCommand(videoId: string, success: boole
   return updated;
 }
 
-export async function claimCloudRenderJob(rendererId: string) {
+export async function claimCloudRenderJob(rendererId: string, allowAutomatic = true) {
   const db = getDb();
   const now = new Date();
   await db.update(cloudRenderJobs).set({
@@ -304,8 +364,18 @@ export async function claimCloudRenderJob(rendererId: string) {
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const candidate = await db.query.cloudRenderJobs.findFirst({
-      where: and(eq(cloudRenderJobs.status, "queued"), eq(cloudRenderJobs.cancelRequested, false)),
-      orderBy: asc(cloudRenderJobs.createdAt),
+      where: and(
+        eq(cloudRenderJobs.status, "queued"),
+        eq(cloudRenderJobs.cancelRequested, false),
+        or(isNull(cloudRenderJobs.scheduledAt), lte(cloudRenderJobs.scheduledAt, now)),
+        // Filter before ordering so a blocked automatic job cannot starve a manual request.
+        allowAutomatic ? undefined : sql`coalesce(
+          ${cloudRenderJobs.metadata}->>'request_source',
+          case when ${cloudRenderJobs.message} like '自動レンダー%' then 'automatic'
+            when ${cloudRenderJobs.scheduledAt} is not null then 'scheduled' else 'manual' end
+        ) <> 'automatic'`,
+      ),
+      orderBy: [desc(cloudRenderJobs.priority), asc(cloudRenderJobs.createdAt)],
     });
     if (!candidate) return null;
     const [claimed] = await db.update(cloudRenderJobs).set({
@@ -322,14 +392,16 @@ export async function claimCloudRenderJob(rendererId: string) {
   return null;
 }
 
-function validateBlobUrl(value: string) {
-  const url = new URL(value);
-  const youtube = url.protocol === "https:" && url.hostname === "youtu.be" && /^\/[A-Za-z0-9_-]{6,32}$/.test(url.pathname);
-  if (
-    !youtube && (url.protocol !== "https:" ||
-    !url.hostname.endsWith(".public.blob.vercel-storage.com") ||
-    !/^\/renders\/[0-9a-f-]{36}\.mp4$/.test(url.pathname))
-  ) {
+async function validateBlobUrl(value: string) {
+  const settings = await getDb().query.controlPanelSettings.findFirst({
+    where: eq(controlPanelSettings.id, "primary"),
+    columns: { values: true },
+  });
+  if (!isAllowedCompletedVideoUrl(value, {
+    r2Endpoint: settings?.values?.storage?.r2Endpoint,
+    r2Bucket: settings?.values?.storage?.r2Bucket,
+    r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL,
+  })) {
     throw new RenderApiError("INVALID_VIDEO_URL", "Unexpected completed video URL.", 400);
   }
 }
@@ -343,7 +415,7 @@ export async function updateCloudRenderJob(
   if (!job || job.claimedBy !== rendererId || TERMINAL_CLOUD_RENDER_STATUSES.has(job.status)) {
     throw new RenderApiError("JOB_NOT_FOUND", "Cloud render job was not found.", 404);
   }
-  if (input.videoUrl) validateBlobUrl(input.videoUrl);
+  if (input.videoUrl) await validateBlobUrl(input.videoUrl);
   if (input.status === "completed" && (!input.videoUrl || !input.videoSize)) {
     throw new RenderApiError("INVALID_COMPLETION", "Completed jobs require a Blob URL and size.", 400);
   }
@@ -354,7 +426,11 @@ export async function updateCloudRenderJob(
     status: input.status,
     progress: input.status === "completed" ? 100 : input.progress,
     message: input.message,
-    metadata: input.metadata as CloudRenderMetadata | null | undefined,
+    metadata: {
+      ...job.metadata,
+      ...input.metadata,
+      request_source: renderRequestSource(job),
+    } as CloudRenderMetadata,
     errorCode: input.errorCode,
     error: input.error,
     videoUrl: input.videoUrl,

@@ -2,6 +2,7 @@ import { getRecentPlays, getSnapshotDelta, listDailyDigestTargets } from "@/db/r
 import { formatAccuracy, formatNumber, formatRank, formatScoreAccuracy } from "@/lib/format";
 import { MODE_ACCENTS, MODE_LABELS } from "@/lib/osu/modes";
 import { sendDiscordDm } from "@/lib/discord/rest";
+import { publicAppOrigin } from "@/lib/public-app-url";
 
 function colorToInt(hex: string) {
   return Number.parseInt(hex.replace("#", ""), 16);
@@ -9,7 +10,7 @@ function colorToInt(hex: string) {
 
 export async function sendDailyDigests() {
   const targets = await listDailyDigestTargets();
-  const appUrl = process.env.WEB_APP_URL ?? "http://localhost:3000";
+  const appUrl = publicAppOrigin();
   const results: Array<{ accountId: string; status: "sent" | "skipped" | "failed"; error?: string }> = [];
 
   for (const target of targets) {

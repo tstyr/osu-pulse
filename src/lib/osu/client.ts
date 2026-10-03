@@ -1,5 +1,6 @@
 import type { OsuMode } from "./modes";
-import type { OsuScore, OsuUser } from "./types";
+import type { OsuBeatmapDifficultyAttributes, OsuScore, OsuUser } from "./types";
+import { recordServiceUsage } from "../../db/feature-repository";
 
 const OSU_API_BASE = "https://osu.ppy.sh/api/v2";
 const OSU_TOKEN_URL = "https://osu.ppy.sh/oauth/token";
@@ -9,7 +10,12 @@ type CachedToken = {
   expiresAt: number;
 };
 
-let cachedToken: CachedToken | undefined;
+export type OsuApiCredentials = {
+  clientId: string;
+  clientSecret: string;
+};
+
+const cachedTokens = new Map<string, CachedToken>();
 
 export class OsuApiError extends Error {
   constructor(
@@ -21,7 +27,8 @@ export class OsuApiError extends Error {
   }
 }
 
-function credentials() {
+function credentials(override?: OsuApiCredentials) {
+  if (override?.clientId && override.clientSecret) return override;
   const clientId = process.env.OSU_CLIENT_ID;
   const clientSecret = process.env.OSU_CLIENT_SECRET;
 
@@ -32,8 +39,13 @@ function credentials() {
   return { clientId, clientSecret };
 }
 
-async function requestToken(): Promise<string> {
-  const { clientId, clientSecret } = credentials();
+function credentialsKey(value: OsuApiCredentials) {
+  return `${value.clientId}\u0000${value.clientSecret}`;
+}
+
+async function requestToken(input?: OsuApiCredentials): Promise<string> {
+  const resolved = credentials(input);
+  const { clientId, clientSecret } = resolved;
   const response = await fetch(OSU_TOKEN_URL, {
     method: "POST",
     headers: {
@@ -58,35 +70,38 @@ async function requestToken(): Promise<string> {
     expires_in: number;
   };
 
-  cachedToken = {
+  const cachedToken = {
     value: body.access_token,
     expiresAt: Date.now() + Math.max(body.expires_in - 60, 60) * 1_000,
   };
+  cachedTokens.set(credentialsKey(resolved), cachedToken);
 
   return cachedToken.value;
 }
 
-async function accessToken(forceRefresh = false) {
+async function accessToken(input?: OsuApiCredentials, forceRefresh = false) {
+  const resolved = credentials(input);
+  const cachedToken = cachedTokens.get(credentialsKey(resolved));
   if (!forceRefresh && cachedToken && cachedToken.expiresAt > Date.now()) {
     return cachedToken.value;
   }
 
-  return requestToken();
+  return requestToken(resolved);
 }
 
-async function osuFetch<T>(path: string, retry = true): Promise<T> {
+async function osuFetch<T>(path: string, retry = true, input?: OsuApiCredentials): Promise<T> {
   const response = await fetch(`${OSU_API_BASE}${path}`, {
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${await accessToken()}`,
+      Authorization: `Bearer ${await accessToken(input)}`,
       "X-API-Version": "20220705",
     },
     cache: "no-store",
   });
 
   if (response.status === 401 && retry) {
-    await accessToken(true);
-    return osuFetch<T>(path, false);
+    await accessToken(input, true);
+    return osuFetch<T>(path, false, input);
   }
 
   if (!response.ok) {
@@ -97,27 +112,76 @@ async function osuFetch<T>(path: string, retry = true): Promise<T> {
     );
   }
 
+  await recordServiceUsage("osu_api").catch(() => undefined);
+
+  return (await response.json()) as T;
+}
+
+async function osuPost<T>(path: string, body: unknown, retry = true, input?: OsuApiCredentials): Promise<T> {
+  const response = await fetch(`${OSU_API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${await accessToken(input)}`,
+      "Content-Type": "application/json",
+      "X-API-Version": "20220705",
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (response.status === 401 && retry) {
+    await accessToken(input, true);
+    return osuPost<T>(path, body, false, input);
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new OsuApiError(`osu! API request failed (${response.status})${detail ? `: ${detail}` : ""}`, response.status);
+  }
+  await recordServiceUsage("osu_api").catch(() => undefined);
   return (await response.json()) as T;
 }
 
 export async function getOsuUser(
   usernameOrId: string | number,
   mode: OsuMode = "osu",
+  input?: OsuApiCredentials,
 ) {
   const numeric = /^\d+$/.test(String(usernameOrId));
   const key = numeric ? "" : "?key=username";
   return osuFetch<OsuUser>(
     `/users/${encodeURIComponent(String(usernameOrId))}/${mode}${key}`,
+    true,
+    input,
   );
+}
+
+export async function getOsuScore(
+  scoreId: string | number,
+  input?: OsuApiCredentials,
+  legacyMode?: OsuMode,
+) {
+  if (!/^\d{1,18}$/.test(String(scoreId))) throw new OsuApiError("Invalid osu! score id", 400);
+  try {
+    return await osuFetch<OsuScore>(`/scores/${encodeURIComponent(String(scoreId))}`, true, input);
+  } catch (error) {
+    if (!(error instanceof OsuApiError) || error.status !== 404 || !legacyMode) throw error;
+    return osuFetch<OsuScore>(
+      `/scores/${legacyMode}/${encodeURIComponent(String(scoreId))}`,
+      true,
+      input,
+    );
+  }
 }
 
 export async function getRecentScores(
   userId: number,
   mode: OsuMode,
   limit = 50,
+  input?: OsuApiCredentials,
+  options: { includeFails?: boolean } = {},
 ) {
   const query = new URLSearchParams({
-    include_fails: "1",
+    include_fails: options.includeFails === false ? "0" : "1",
     legacy_only: "0",
     mode,
     limit: String(Math.min(Math.max(limit, 1), 100)),
@@ -125,6 +189,8 @@ export async function getRecentScores(
 
   return osuFetch<OsuScore[]>(
     `/users/${userId}/scores/recent?${query.toString()}`,
+    true,
+    input,
   );
 }
 
@@ -132,6 +198,7 @@ export async function getBestScores(
   userId: number,
   mode: OsuMode,
   limit = 10,
+  input?: OsuApiCredentials,
 ) {
   const query = new URLSearchParams({
     legacy_only: "0",
@@ -141,9 +208,25 @@ export async function getBestScores(
 
   return osuFetch<OsuScore[]>(
     `/users/${userId}/scores/best?${query.toString()}`,
+    true,
+    input,
+  );
+}
+
+export async function getBeatmapDifficultyAttributes(
+  beatmapId: number,
+  mode: OsuMode,
+  mods: string[] = [],
+  input?: OsuApiCredentials,
+) {
+  return osuPost<{ attributes: OsuBeatmapDifficultyAttributes }>(
+    `/beatmaps/${beatmapId}/attributes`,
+    { ruleset: mode, mods },
+    true,
+    input,
   );
 }
 
 export function clearOsuTokenCache() {
-  cachedToken = undefined;
+  cachedTokens.clear();
 }

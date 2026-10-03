@@ -7,21 +7,23 @@ import {
   markReminderFailed,
 } from "@/db/repository";
 import { sendDiscordChannelMessage, sendDiscordDm } from "@/lib/discord/rest";
+import { publicAppOrigin } from "@/lib/public-app-url";
 
 type AutomationPayload =
   | { type: "reminder"; reminderId: string; dueAt: string }
   | { type: "pomodoro"; sessionId: string };
 
 export async function triggerRemoteAutomation(payload: AutomationPayload) {
-  const appUrl = process.env.WEB_APP_URL;
+  const appUrl = publicAppOrigin();
   const secret = process.env.INTERNAL_API_SECRET;
-  if (!appUrl || !secret) return false;
+  if (!secret) return false;
 
   try {
-    const response = await fetch(`${appUrl.replace(/\/$/, "")}/api/automations`, {
+    const response = await fetch(`${appUrl}/api/automations`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error(`Automation API returned ${response.status}`);
     return true;

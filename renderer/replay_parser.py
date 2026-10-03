@@ -64,6 +64,27 @@ def _read_osu_string(stream: io.BytesIO, *, maximum: int = 4096) -> str:
         raise RenderError(ErrorCode.INVALID_REPLAY, "Replay contains invalid UTF-8") from exc
 
 
+def replace_beatmap_md5(data: bytes, beatmap_md5: str) -> bytes:
+    """Return a replay whose beatmap hash points at an already-resolved map version."""
+    replacement = beatmap_md5.lower()
+    if not MD5_PATTERN.fullmatch(replacement):
+        raise RenderError(ErrorCode.INVALID_REPLAY, "Replacement beatmap MD5 is invalid")
+    current = parse_replay(data)
+    if current.beatmap_md5 == replacement:
+        return data
+    stream = io.BytesIO(data)
+    stream.seek(5)  # mode byte + game version int32
+    if _unpack(stream, "<B") != 0x0B:
+        raise RenderError(ErrorCode.INVALID_REPLAY, "Replay has no beatmap MD5 string")
+    length = _read_uleb128(stream)
+    start = stream.tell()
+    end = start + length
+    encoded = replacement.encode("ascii")
+    if length != len(encoded) or end > len(data):
+        raise RenderError(ErrorCode.INVALID_REPLAY, "Replay beatmap MD5 field is invalid")
+    return data[:start] + encoded + data[end:]
+
+
 def parse_replay(data: bytes) -> ReplayInfo:
     if len(data) < 64:
         raise RenderError(ErrorCode.INVALID_REPLAY, "Replay is too small")

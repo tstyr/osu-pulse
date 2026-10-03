@@ -18,6 +18,8 @@
 # local workspace artifacts
 /work/
 /outputs/
+/bot-audio/*
+!/bot-audio/.gitkeep
 
 # environment files and Vercel metadata
 .env*
@@ -34,6 +36,7 @@
 /renderer/beatmap-index.json
 /renderer/stats.json
 /renderer/youtube-uploads.json
+/renderer/youtube-pending.json
 /renderer/local/
 __pycache__/
 *.py[cod]
@@ -42,6 +45,7 @@ __pycache__/
 /lavalink/runtime/
 /lavalink/plugins/*
 !/lavalink/plugins/.gitkeep
+/lavalink/logs/
 
 # misc
 .DS_Store
@@ -54,5 +58,3 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 /.swc
-
-.env*

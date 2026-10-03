@@ -45,4 +45,16 @@ describe("render account choices", () => {
       difficulty: "Hard",
     })).toBe("—pp ・ A ・ second_account ・ Artist - Song [Hard]");
   });
+
+  it("shows the play time in JST so chronological choices are clear", () => {
+    expect(renderAccountChoiceName({
+      pp: 100,
+      rank: "A",
+      ruleset: "osu",
+      endedAt: Date.parse("2026-09-21T13:46:11Z"),
+      artist: "Artist",
+      title: "Song",
+      difficulty: "Hard",
+    })).toBe("100.0pp ・ A ・ STD ・ 09/21 22:46 ・ Artist - Song [Hard]");
+  });
 });

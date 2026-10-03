@@ -74,12 +74,17 @@ export type RenderJobStatus = {
   progress: number;
   message: string;
   queue_position: number | null;
+  priority: number;
+  estimated_render_seconds: number;
+  estimated_wait_seconds: number;
+  highlight_available: boolean;
   metadata: RenderMetadata | null;
   options: {
     resolution: string;
     fps: number;
     speed: string;
     motion_blur: boolean;
+    highlight: boolean;
   };
   error_code: string | null;
   error: string | null;
@@ -88,6 +93,7 @@ export type RenderJobStatus = {
   youtube_title: string | null;
   youtube_privacy_status: "private" | "unlisted" | "public" | null;
   youtube_error: string | null;
+  output_size_bytes: number | null;
   render_duration_seconds: number | null;
 };
 
@@ -96,6 +102,7 @@ export type RenderOptions = {
   fps: number;
   speed: string;
   motionBlur: boolean;
+  highlight?: boolean;
 };
 
 export type SharedVideo = {
@@ -163,6 +170,7 @@ export class RendererClient {
         fps: options.fps,
         speed: options.speed,
         motion_blur: options.motionBlur,
+        highlight: options.highlight ?? false,
       }),
     });
   }
@@ -177,6 +185,7 @@ export class RendererClient {
     form.set("fps", String(options.fps));
     form.set("speed", options.speed);
     form.set("motion_blur", String(options.motionBlur));
+    form.set("highlight", String(options.highlight ?? false));
     form.set("replay", new Blob([replayBuffer], { type: "application/octet-stream" }), "replay.osr");
     return this.requestJson("/render", { method: "POST", body: form });
   }
@@ -187,6 +196,10 @@ export class RendererClient {
 
   async cancel(jobId: string): Promise<void> {
     await this.requestJson(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+  }
+
+  async prioritize(jobId: string): Promise<RenderJobStatus> {
+    return this.requestJson(`/jobs/${encodeURIComponent(jobId)}/prioritize`, { method: "POST" });
   }
 
   async downloadVideo(jobId: string, maximumBytes: number): Promise<Buffer> {
@@ -216,6 +229,14 @@ export class RendererClient {
   async shareVideo(jobId: string): Promise<SharedVideo> {
     return this.requestJson(
       `/jobs/${encodeURIComponent(jobId)}/share`,
+      { method: "POST" },
+      numberEnv("RENDER_SHARE_TIMEOUT_MS", 7_200_000),
+    );
+  }
+
+  async shareHighlight(jobId: string): Promise<SharedVideo> {
+    return this.requestJson(
+      `/jobs/${encodeURIComponent(jobId)}/highlight/share`,
       { method: "POST" },
       numberEnv("RENDER_SHARE_TIMEOUT_MS", 7_200_000),
     );

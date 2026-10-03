@@ -5,7 +5,13 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq, lt } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
 
-import { getDb } from "@/db";
+import {
+  DatabaseQuotaExceededError,
+  DatabaseUnavailableError,
+  getDb,
+  isDatabaseQuotaExceededError,
+  isTransientDatabaseError,
+} from "@/db";
 import { controlPanelLoginAttempts, controlPanelSessions } from "@/db/schema";
 
 const COOKIE_NAME = "osu_pulse_control";
@@ -82,12 +88,30 @@ export async function clearLoginFailures(fingerprintHash: string) {
   );
 }
 
-export async function createControlPanelSession() {
+export type ControlPanelIdentity = {
+  authMethod: "keyphrase" | "discord";
+  discordUserId?: string | null;
+  discordUsername?: string | null;
+  discordAvatarUrl?: string | null;
+};
+
+export function isControlPanelAuthStoreUnavailable(error: unknown) {
+  return error instanceof DatabaseQuotaExceededError
+    || error instanceof DatabaseUnavailableError
+    || isDatabaseQuotaExceededError(error)
+    || isTransientDatabaseError(error);
+}
+
+export async function createControlPanelSession(identity: ControlPanelIdentity = { authMethod: "keyphrase" }) {
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_SECONDS * 1_000);
   await getDb().insert(controlPanelSessions).values({
     tokenHash: hmac(token),
+    authMethod: identity.authMethod,
+    discordUserId: identity.discordUserId ?? null,
+    discordUsername: identity.discordUsername ?? null,
+    discordAvatarUrl: identity.discordAvatarUrl ?? null,
     expiresAt,
     createdAt: now,
     lastSeenAt: now,
@@ -107,14 +131,29 @@ export async function getControlPanelSession() {
   const token = (await cookies()).get(COOKIE_NAME)?.value;
   if (!token) return null;
   const tokenHash = hmac(token);
-  const row = await getDb().query.controlPanelSessions.findFirst({
-    where: eq(controlPanelSessions.tokenHash, tokenHash),
-  });
+  let row: Awaited<ReturnType<ReturnType<typeof getDb>["query"]["controlPanelSessions"]["findFirst"]>>;
+  try {
+    row = await getDb().query.controlPanelSessions.findFirst({
+      where: eq(controlPanelSessions.tokenHash, tokenHash),
+    });
+  } catch (error) {
+    // A stale cloud session must not turn a database quota outage into an
+    // opaque React Server Components error. Treat it as signed out instead.
+    if (isControlPanelAuthStoreUnavailable(error)) return null;
+    throw error;
+  }
   if (!row || row.expiresAt.getTime() <= Date.now()) {
     if (row) await getDb().delete(controlPanelSessions).where(eq(controlPanelSessions.tokenHash, tokenHash));
     return null;
   }
-  return { tokenHash, expiresAt: row.expiresAt.toISOString() };
+  return {
+    tokenHash,
+    authMethod: row.authMethod,
+    discordUserId: row.discordUserId,
+    discordUsername: row.discordUsername,
+    discordAvatarUrl: row.discordAvatarUrl,
+    expiresAt: row.expiresAt.toISOString(),
+  };
 }
 
 export async function hasControlPanelSession() {
@@ -124,10 +163,15 @@ export async function hasControlPanelSession() {
 export async function deleteControlPanelSession() {
   const cookieStore = await cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value;
-  if (token) {
-    await getDb().delete(controlPanelSessions).where(eq(controlPanelSessions.tokenHash, hmac(token)));
+  try {
+    if (token) {
+      await getDb().delete(controlPanelSessions).where(eq(controlPanelSessions.tokenHash, hmac(token)));
+    }
+  } catch (error) {
+    if (!isControlPanelAuthStoreUnavailable(error)) throw error;
+  } finally {
+    cookieStore.delete(COOKIE_NAME);
   }
-  cookieStore.delete(COOKIE_NAME);
 }
 
 export async function cleanupExpiredControlPanelSessions() {

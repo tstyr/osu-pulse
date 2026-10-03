@@ -3,9 +3,18 @@ import { redirect } from "next/navigation";
 import { ControlLogo } from "@/components/control-panel/control-logo";
 import { LoginForm } from "@/components/control-panel/login-form";
 import { hasControlPanelSession } from "@/lib/control/auth";
+import { discordOAuthConfigured } from "@/lib/control/discord-oauth";
 
-export default async function LoginPage() {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ oauth?: string }> }) {
   if (await hasControlPanelSession()) redirect("/dashboard");
+  const oauth = (await searchParams).oauth;
+  const oauthError = oauth === "denied"
+    ? "Discord認証に失敗したか、このサーバーの管理権限がありません。"
+    : oauth === "not-configured"
+      ? "Discord OAuthのClient Secretが未設定です。"
+      : oauth === "cancelled"
+        ? "Discord認証をキャンセルしました。"
+        : null;
   return (
     <main className="grid min-h-screen place-items-center px-4 py-10">
       <section className="w-full max-w-[430px]">
@@ -16,7 +25,7 @@ export default async function LoginPage() {
             <h1 className="mt-2 text-[23px] font-semibold tracking-[-0.025em]">管理コンソールへログイン</h1>
             <p className="mt-2 text-sm leading-6 text-[#697386]">レンダー、YouTube、DB、ローカルPCの状態を1か所で管理します。</p>
           </div>
-          <div className="px-7 py-6"><LoginForm /></div>
+          <div className="px-7 py-6"><LoginForm discordEnabled={discordOAuthConfigured()} oauthError={oauthError} /></div>
         </div>
         <p className="mt-5 text-center text-[11px] leading-5 text-[#7d8795]">Discord Botの操作には影響しません。キーフレーズはサーバー側だけで照合されます。</p>
       </section>

@@ -16,7 +16,9 @@ import {
   Users,
   Video,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import useSWR from "swr";
+import { liveRequestOptions, requestJson } from "@/lib/client/request-json";
+import { RefreshNotice } from "@/components/control-panel/refresh-notice";
 
 import type { DashboardOverview } from "@/lib/control/dashboard";
 
@@ -29,7 +31,7 @@ function formatBytes(value: number) {
 
 function formatDate(value: string | null) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tokyo" }).format(new Date(value));
 }
 
 function StatCard({ label, value, detail, icon: Icon, tone = "blue" }: {
@@ -74,31 +76,21 @@ function ResourceCard({ label, value, percent, detail, icon: Icon }: {
 }
 
 export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
-  const [data, setData] = useState(initial);
-  const [refreshing, setRefreshing] = useState(false);
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const response = await fetch("/api/control/overview", { cache: "no-store" });
-      if (response.ok) setData(await response.json() as DashboardOverview);
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), 15_000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  const { data = initial, error, isValidating: refreshing, mutate } = useSWR<DashboardOverview>(
+    "/api/control/overview", requestJson,
+    { ...liveRequestOptions, fallbackData: initial, refreshInterval: 5_000 },
+  );
+  const refresh = () => mutate().catch(() => undefined);
 
   const maxTrend = Math.max(1, ...data.trend.map((item) => item.total));
   return (
     <div>
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div><p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f48120]">Overview</p><h1 className="mt-1 text-2xl font-semibold tracking-[-0.03em]">システム概要</h1><p className="mt-1 text-sm text-[#6f7a8c]">レンダー、ストレージ、DBの現在地を15秒ごとに更新します。</p></div>
+        <div><p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f48120]">Live overview</p><h1 className="mt-1 text-2xl font-semibold tracking-[-0.03em]">システム概要</h1><p className="mt-1 text-sm text-[#6f7a8c]">レンダー、ストレージ、DBの現在地を画面表示中は5秒ごとに更新します。</p></div>
         <button type="button" onClick={() => void refresh()} disabled={refreshing} className="inline-flex h-9 items-center gap-2 rounded-md border border-[#d5dae2] bg-white px-3 text-xs font-medium text-[#4f5a6b] hover:bg-[#f7f8f9]"><RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} /> 更新</button>
       </div>
 
+      <RefreshNotice error={error} retry={() => { void refresh(); }} />
       {data.renderer.restartRequired ? <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">設定を受信しました。実行中の処理が終わるとRendererが自動再起動して反映します。</div> : null}
 
       <section className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -154,7 +146,7 @@ export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
       </section>
 
       <section className="mt-5 grid gap-3 sm:grid-cols-3">
-        <div className="cp-panel flex items-center gap-3 p-4"><Database className="size-5 text-[#0051c3]" /><div><p className="text-xs font-semibold">Neon DB</p><p className="mt-1 text-[10px] text-[#7d8795]">詳細はデータベース画面</p></div></div>
+        <div className="cp-panel flex items-center gap-3 p-4"><Database className="size-5 text-[#0051c3]" /><div><p className="text-xs font-semibold">{data.databaseProvider}</p><p className="mt-1 text-[10px] text-[#7d8795]">詳細はデータベース画面</p></div></div>
         <div className="cp-panel flex items-center gap-3 p-4"><CheckCircle2 className="size-5 text-emerald-600" /><div><p className="text-xs font-semibold">ローカル動画 {data.renders.localVideoCount}本</p><p className="mt-1 text-[10px] text-[#7d8795]">{formatBytes(data.renders.localVideoBytes)} 使用中</p></div></div>
         <div className="cp-panel flex items-center gap-3 p-4"><Activity className="size-5 text-[#f48120]" /><div><p className="text-xs font-semibold">Config v{data.renderer.configurationVersion}</p><p className="mt-1 text-[10px] text-[#7d8795]">{data.renderer.restartRequired ? "再起動待ち" : "同期済み"}</p></div></div>
       </section>

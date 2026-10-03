@@ -7,10 +7,12 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from renderer.beatmap_index import BeatmapIndex
 from renderer.beatmap_resolver import BeatmapResolver
-from renderer.jobs import JobManager
+from renderer.jobs import JobManager, overall_youtube_progress
+from renderer.errors import RenderCancelled, RenderError
 from renderer.models import JobStatus, RenderJob, ScoreMetadata
 from renderer.render_options import RenderOptions
 from renderer.tests.helpers import replay_bytes
@@ -88,6 +90,153 @@ class FakeDownloader:
 
 
 class JobQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_polls_cache_disk_totals_but_keep_progress_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            job = RenderJob("a" * 32, "user", "replay", "source", RenderOptions(), status=JobStatus.RENDERING, progress=10)
+            manager.jobs[job.id] = job
+            (settings.output_path / f"{job.id}.mp4").write_bytes(b"video")
+            with patch("renderer.jobs.time.monotonic", side_effect=[100, 101, 111]):
+                first = manager.metrics_snapshot()
+                (settings.output_path / f"{job.id}.mp4").write_bytes(b"updated-video")
+                job.progress = 60
+                second = manager.metrics_snapshot()
+                refreshed = manager.metrics_snapshot()
+
+            self.assertEqual(first["video_bytes"], 5)
+            self.assertEqual(second["video_bytes"], 5)
+            self.assertEqual(second["active_progress"], 60)
+            self.assertEqual(refreshed["video_bytes"], 13)
+
+    async def test_thumbnail_playlist_failures_do_not_retry_an_uploaded_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            job_id = "b" * 32
+            manager = None
+
+            class OptionalApiFailureUploader(FakeYouTubeUploader):
+                async def upload_thumbnail(self, video_id, image_path):
+                    self.recorded_before_thumbnail = manager.youtube_archive.get(job_id) is not None
+                    raise OSError("thumbnail API unavailable")
+
+                async def add_to_playlists(self, video_id, metadata):
+                    raise RuntimeError("playlist API unavailable")
+
+            uploader = OptionalApiFailureUploader()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path), youtube_uploader=uploader)  # type: ignore[arg-type]
+            job = RenderJob(job_id, "user", "replay", "source", RenderOptions(), metadata=ScoreMetadata())
+            job.output_path = settings.output_path / f"{job.id}.mp4"
+            job.output_path.write_bytes(b"video")
+            job.thumbnail_path = settings.output_path / f"{job.id}-thumbnail.jpg"
+            job.thumbnail_path.write_bytes(b"thumbnail")
+
+            await manager._upload_youtube(job)
+
+            self.assertTrue(uploader.recorded_before_thumbnail)
+            self.assertEqual(job.youtube_url, "https://youtu.be/abc123XYZ")
+            self.assertIsNone(job.youtube_error)
+            self.assertEqual(manager.youtube_archive.pending_entries(), {})
+            self.assertEqual(manager.youtube_archive.get(job.id)["video_id"], "abc123XYZ")
+
+    async def test_manual_render_skips_policy_deferred_automatic_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            manager.render_policy = SimpleNamespace(snapshot=lambda: SimpleNamespace(allowed=False, reason="outside window"))
+            automatic = RenderJob("auto", "user", "replay", "auto", RenderOptions(), status=JobStatus.QUEUED, bypass_start_policy=False)
+            manual = RenderJob("manual", "user", "replay", "manual", RenderOptions(), status=JobStatus.QUEUED)
+            manager.jobs = {job.id: job for job in (automatic, manual)}
+            manager._queued_ids = [automatic.id, manual.id]
+
+            selected = await asyncio.wait_for(manager._next_render_job(), timeout=0.5)
+
+            self.assertIs(selected, manual)
+            self.assertEqual(manager._queued_ids, [automatic.id])
+            self.assertEqual(automatic.message, "outside window")
+            self.assertIsNone(manual.queue_position)
+            self.assertEqual(automatic.queue_position, 1)
+
+    async def test_priority_does_not_enqueue_reserved_job_a_second_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            jobs = [RenderJob(str(index), "user", "replay", str(index), RenderOptions(), status=JobStatus.QUEUED) for index in range(3)]
+            manager.jobs = {job.id: job for job in jobs}
+            manager._queued_ids = [job.id for job in jobs]
+
+            first = await manager._next_render_job()
+            with self.assertRaises(RenderError):
+                await manager.prioritize(first.id)
+            await manager.prioritize(jobs[2].id)
+            second, third = await asyncio.gather(manager._next_render_job(), manager._next_render_job())
+
+            self.assertEqual([first.id, second.id, third.id], ["0", "2", "1"])
+            self.assertEqual(manager.queue_size, 0)
+
+    async def test_pending_worker_wakes_immediately_for_a_manual_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            waiting = asyncio.create_task(manager._next_render_job())
+            await asyncio.sleep(0)
+            manual = RenderJob("manual", "user", "replay", "manual", RenderOptions(), status=JobStatus.QUEUED)
+            manager.jobs[manual.id] = manual
+            manager._queued_ids.append(manual.id)
+            manager._queue_changed.set()
+            self.assertIs(await asyncio.wait_for(waiting, timeout=0.5), manual)
+
+    async def test_youtube_cancel_propagates_and_does_not_schedule_a_retry(self) -> None:
+        await self._assert_youtube_upload_cancelled(cancel_job=True)
+
+    async def test_youtube_upload_child_stops_when_worker_is_cancelled(self) -> None:
+        await self._assert_youtube_upload_cancelled(cancel_job=False)
+
+    async def _assert_youtube_upload_cancelled(self, *, cancel_job: bool) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            started = asyncio.Event()
+            stopped = asyncio.Event()
+
+            class BlockingUploader:
+                configured = True
+
+                async def upload(self, *args):
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        stopped.set()
+
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path), youtube_uploader=BlockingUploader())  # type: ignore[arg-type]
+            job = RenderJob("a" * 32, "user", "replay", "source", RenderOptions(), metadata=ScoreMetadata())
+            job.output_path = settings.output_path / f"{job.id}.mp4"
+            job.output_path.write_bytes(b"video")
+            worker = asyncio.create_task(manager._upload_youtube(job))
+            await asyncio.wait_for(started.wait(), timeout=0.5)
+            if cancel_job:
+                job.cancel_requested.set()
+            else:
+                worker.cancel()
+
+            with self.assertRaises(RenderCancelled if cancel_job else asyncio.CancelledError):
+                await asyncio.wait_for(worker, timeout=0.5)
+            self.assertTrue(stopped.is_set())
+            self.assertIsNone(job.youtube_error)
+            self.assertEqual(manager.youtube_archive.pending_entries(), {})
+            self.assertTrue(job.output_path.is_file())
+
+    def test_maps_youtube_progress_to_final_stage(self) -> None:
+        self.assertEqual(overall_youtube_progress(0), 90)
+        self.assertEqual(overall_youtube_progress(50), 94)
+        self.assertEqual(overall_youtube_progress(100), 99)
+
     async def test_youtube_failure_is_recorded_without_failing_render(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

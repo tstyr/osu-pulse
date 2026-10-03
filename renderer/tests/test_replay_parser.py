@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from renderer.errors import ErrorCode, RenderError
-from renderer.replay_parser import mods_from_bits, parse_replay
+from renderer.replay_parser import mods_from_bits, parse_replay, replace_beatmap_md5
 from renderer.tests.helpers import replay_bytes
 
 
@@ -25,3 +25,11 @@ class ReplayParserTests(unittest.TestCase):
 
     def test_preserves_ruleset_for_caller_validation(self) -> None:
         self.assertEqual(parse_replay(replay_bytes("a" * 32, mode=3)).mode, 3)
+
+    def test_replaces_only_the_beatmap_hash(self) -> None:
+        original = replay_bytes("a" * 32, replay_md5="c" * 32)
+        replaced = replace_beatmap_md5(original, "B" * 32)
+        parsed = parse_replay(replaced)
+        self.assertEqual(parsed.beatmap_md5, "b" * 32)
+        self.assertEqual(parsed.replay_md5, "c" * 32)
+        self.assertEqual(len(replaced), len(original))

@@ -1,0 +1,53 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  autoRenderSettingsSchema,
+  defaultAutoRenderSettings,
+} from "../lib/control/auto-render-settings";
+import { matchesAutoRenderScore, prioritizeAutoRenderScores } from "./auto-render";
+
+const score = {
+  osuScoreId: "7369136249",
+  mode: "osu" as const,
+  rank: "A",
+  pp: 145.2,
+  accuracy: 0.9345,
+  passed: true,
+};
+
+describe("auto render conditions", () => {
+  it("matches the requested users' default A-rank policy", () => {
+    expect(matchesAutoRenderScore(defaultAutoRenderSettings(), score)).toBe(true);
+  });
+
+  it("keeps legacy single-Discord settings compatible", () => {
+    const current = defaultAutoRenderSettings();
+    const parsed = autoRenderSettingsSchema.parse({
+      ...current,
+      discordUserIds: undefined,
+      osuUserIds: undefined,
+      discordUserId: "974264083853492234",
+    });
+    expect(parsed.discordUserIds).toEqual(["974264083853492234"]);
+    expect(parsed.osuUserIds).toEqual([]);
+  });
+
+  it("applies rank, mode, pp, accuracy, and pass conditions", () => {
+    const settings = { ...defaultAutoRenderSettings(), ranks: ["S"] as ["S"] };
+    expect(matchesAutoRenderScore(settings, score)).toBe(false);
+    expect(matchesAutoRenderScore({ ...settings, ranks: ["A"], modes: ["mania"] }, score)).toBe(false);
+    expect(matchesAutoRenderScore({ ...settings, ranks: ["A"], minimumPp: 150 }, score)).toBe(false);
+    expect(matchesAutoRenderScore({ ...settings, ranks: ["A"], minimumAccuracy: 94 }, score)).toBe(false);
+    expect(matchesAutoRenderScore({ ...settings, ranks: ["A"] }, { ...score, passed: false })).toBe(false);
+  });
+
+  it("prioritizes the target with fewer handled renders", () => {
+    const scores = [
+      { accountId: "older-busy", osuScoreId: "1", endedAt: new Date("2026-01-01") },
+      { accountId: "new-target", osuScoreId: "2", endedAt: new Date("2026-01-02") },
+      { accountId: "older-busy", osuScoreId: "3", endedAt: new Date("2026-01-03") },
+    ];
+    const prioritized = prioritizeAutoRenderScores(scores, new Set(["1"]));
+    expect(prioritized.map((item) => item.osuScoreId)).toEqual(["2", "3"]);
+  });
+});

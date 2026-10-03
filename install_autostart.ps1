@@ -33,18 +33,20 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
+    -RestartCount 999 `
+    -RestartInterval ([TimeSpan]::FromMinutes(1)) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 
 Register-ScheduledTask `
     -TaskName $taskName `
-    -Description "Starts the osu! Pulse Renderer, Lavalink, and Discord Bot after Windows sign-in." `
+    -Description "Starts and continuously supervises osu! Pulse local PostgreSQL, Web UI, Cloudflare Tunnel, Renderer, Lavalink, and Discord Bot after Windows sign-in." `
     -Action $action `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
     -Force | Out-Null
 
-Write-Host "[OK] osu! Pulse will start automatically after Windows sign-in."
+Write-Host "[OK] osu! Pulse will start automatically and recover stopped services after Windows sign-in."
 Write-Host "Task: $taskName"
 Write-Host "Launcher: $launcher"
 Write-Host "Remove: powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Remove"

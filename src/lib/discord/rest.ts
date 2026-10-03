@@ -37,11 +37,17 @@ async function discordRequest<T>(
       ...(init.headers ?? {}),
     },
     cache: "no-store",
+    signal: init.signal ?? AbortSignal.timeout(20_000),
   });
 
   if (response.status === 429 && retry) {
     const body = (await response.json()) as { retry_after?: number };
-    await new Promise((resolve) => setTimeout(resolve, (body.retry_after ?? 1) * 1_000));
+    const retryAfter = Number(body.retry_after);
+    const delay = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1_000 : 1_000;
+    // Leave long rate limits to the persistent delivery worker instead of
+    // holding every following notification/reminder indefinitely.
+    if (delay > 60_000) throw new Error("Discord API rate limit exceeds 60 seconds; delivery will be retried.");
+    await new Promise((resolve) => setTimeout(resolve, delay));
     return discordRequest<T>(path, init, false);
   }
 

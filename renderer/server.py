@@ -68,6 +68,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         beatmap_downloader = BeatmapDownloader(settings) if settings.auto_download_beatmaps else None
         metrics = SystemMetricsCollector(settings.output_path)
         video_sharer = VideoSharer(settings, dependencies)
+        await video_sharer.start()
         youtube_uploader = YouTubeUploader(settings)
         manager = JobManager(
             settings,
@@ -93,6 +94,7 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             yield
         finally:
             await cloud_bridge.stop()
+            await video_sharer.stop()
             await manager.stop()
             if beatmap_downloader:
                 await beatmap_downloader.close()
@@ -210,6 +212,22 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
             }
         return await sharer.share(job_id, job.options)
 
+    @app.post("/jobs/{job_id}/highlight/share", dependencies=[Depends(authorize)])
+    async def share_highlight(job_id: str, request: Request) -> dict[str, object]:
+        _validate_job_id(job_id)
+        sharer: VideoSharer = request.app.state.video_sharer
+        manager: JobManager = request.app.state.jobs
+        job = manager.get(job_id)
+        if job.status.value != "completed" or not job.highlight_path or not job.highlight_path.is_file():
+            raise RenderError(ErrorCode.VIDEO_NOT_READY, "Highlight clip is not ready", http_status=409)
+        return await sharer.share(f"{job_id}-highlight", job.options)
+
+    @app.post("/jobs/{job_id}/prioritize", dependencies=[Depends(authorize)])
+    async def prioritize_job(job_id: str, request: Request) -> dict[str, Any]:
+        _validate_job_id(job_id)
+        manager: JobManager = request.app.state.jobs
+        return (await manager.prioritize(job_id)).public_dict()
+
     @app.delete("/jobs/{job_id}", dependencies=[Depends(authorize)])
     async def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
         _validate_job_id(job_id)
@@ -268,6 +286,7 @@ def _options(values: Any) -> RenderOptions:
         getter("fps"),
         getter("speed"),
         getter("motion_blur"),
+        getter("highlight"),
     )
 
 

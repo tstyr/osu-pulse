@@ -101,6 +101,7 @@ if /i "%~1"=="--check" goto :finished
 :stopped
 echo.
 echo Renderer stopped.
+if /i "%~1"=="--no-pause" goto :finished
 pause
 
 :finished

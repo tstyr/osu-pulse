@@ -36,6 +36,7 @@ def test_settings(root: Path, *, token: str | None = None) -> Settings:
         keep_failed_temp=False,
         video_encoder="auto",
         danser_settings="default",
+        render_schedule_enabled=False,
         stats_path=root / "stats.json",
         youtube_upload_registry_path=root / "youtube-uploads.json",
     )

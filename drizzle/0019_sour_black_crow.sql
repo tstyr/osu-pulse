@@ -1,0 +1,1 @@
+ALTER TABLE "music_playback_states" ADD COLUMN "autoplay_related" boolean DEFAULT false NOT NULL;

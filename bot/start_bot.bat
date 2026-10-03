@@ -20,7 +20,7 @@ if errorlevel 1 (
     goto :failed
 )
 
-powershell -NoProfile -Command "$running = Get-CimInstance Win32_Process ^| Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'bot[\\/]index\.ts' }; if ($running) { exit 0 } else { exit 1 }" >nul 2>nul
+powershell -NoProfile -Command "$running = Get-CimInstance Win32_Process ^| Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'tsx.*bot[\\/]index\.ts' }; if ($running) { exit 0 } else { exit 1 }" >nul 2>nul
 if not errorlevel 1 (
     echo [INFO] Discord Bot is already running.
     if /i "%~1"=="--check" goto :finished
@@ -58,6 +58,12 @@ if /i "%~1"=="--check" (
     goto :finished
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\ensure-local-postgres.ps1"
+if errorlevel 1 (
+    echo [ERROR] Local PostgreSQL could not be started.
+    goto :failed
+)
+
 echo ==============================================
 echo              osu! Pulse Discord Bot
 echo ==============================================
@@ -77,6 +83,7 @@ if /i "%~1"=="--check" goto :finished
 :stopped
 echo.
 echo Bot stopped.
+if /i "%~1"=="--no-pause" goto :finished
 pause
 
 :finished

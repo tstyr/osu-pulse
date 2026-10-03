@@ -18,7 +18,7 @@ describe("osu! normalization", () => {
       total_score: 1_234_567,
       ended_at: "2026-08-27T10:00:00.000Z",
       mods: [{ acronym: "HD" }],
-      beatmap: { id: 7, beatmapset_id: 8, version: "Insane" },
+      beatmap: { id: 7, beatmapset_id: 8, version: "Insane", total_length: 142 },
       beatmapset: { id: 8, artist: "Artist", title: "Song", creator: "Mapper" },
     };
 
@@ -28,6 +28,7 @@ describe("osu! normalization", () => {
       artist: "Artist",
       title: "Song",
       difficulty: "Insane",
+      beatmapLengthSeconds: 142,
       mods: ["HD"],
       score: "1234567",
       passed: true,
@@ -48,6 +49,7 @@ describe("osu! normalization", () => {
         hit_accuracy: 98.5,
         level: { current: 101, progress: 25 },
         play_count: 2_000,
+        play_time: 345_678,
         pp: 7_654,
         ranked_score: 10,
         total_score: 20,
@@ -60,6 +62,7 @@ describe("osu! normalization", () => {
       snapshotDate: "2026-08-27",
       globalRank: 345,
       pp: 7_654,
+      playTimeSeconds: 345_678,
       level: 101.25,
     });
   });

@@ -1,0 +1,1 @@
+ALTER TABLE "score_events" ADD COLUMN "beatmap_length_seconds" integer;

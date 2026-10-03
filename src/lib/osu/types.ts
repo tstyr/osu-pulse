@@ -39,6 +39,11 @@ export type OsuBeatmap = {
   id: number;
   beatmapset_id?: number;
   difficulty_rating?: number;
+  bpm?: number;
+  total_length?: number;
+  ar?: number;
+  accuracy?: number;
+  cs?: number;
   version: string;
 };
 
@@ -71,4 +76,17 @@ export type OsuScore = {
   mods?: Array<string | { acronym: string }>;
   beatmap: OsuBeatmap;
   beatmapset?: OsuBeatmapset;
+};
+
+export type OsuBeatmapDifficultyAttributes = {
+  star_rating: number;
+  max_combo: number;
+  aim_difficulty?: number;
+  aim_difficult_slider_count?: number;
+  aim_difficult_strain_count?: number;
+  speed_difficulty?: number;
+  speed_note_count?: number;
+  speed_difficult_strain_count?: number;
+  flashlight_difficulty?: number;
+  slider_factor?: number;
 };

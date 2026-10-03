@@ -19,6 +19,8 @@ LOGGER = logging.getLogger("renderer.youtube")
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+THUMBNAILS_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 RANGE_PATTERN = re.compile(r"(?:bytes=)?0-([0-9]+)$")
 TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
@@ -39,6 +41,9 @@ class YouTubeUploadResult:
 
 def _clean(value: str | None, fallback: str) -> str:
     cleaned = " ".join((value or "").split()).strip()
+    # YouTube rejects angle brackets in snippet titles. Preserve their visual
+    # meaning with full-width equivalents instead of dropping map text.
+    cleaned = cleaned.replace("<", "＜").replace(">", "＞")
     return cleaned or fallback
 
 
@@ -58,17 +63,45 @@ def _fallback_rank(accuracy: float | None) -> str:
     return "D"
 
 
-def youtube_title(metadata: ScoreMetadata) -> str:
+def _template_values(metadata: ScoreMetadata) -> dict[str, str]:
     rank = RANK_LABELS.get((metadata.rank or "").upper(), (metadata.rank or "").upper()) or _fallback_rank(metadata.accuracy)
     pp = f"{metadata.pp:.1f}pp" if metadata.pp is not None else "—pp"
     accuracy = f"{metadata.accuracy * 100:.2f}%" if metadata.accuracy is not None else "—%"
     artist = _clean(metadata.artist, "Unknown Artist")
     song = _clean(metadata.title, "Unknown Song")
-    difficulty = f" [{_clean(metadata.difficulty, '')}]" if metadata.difficulty else ""
-    return f"{rank} | {pp} | {accuracy} | {artist} - {song}{difficulty}"[:100]
+    return {
+        "rank": rank,
+        "pp": pp,
+        "accuracy": accuracy,
+        "artist": artist,
+        "title": song,
+        "difficulty": _clean(metadata.difficulty, "Unknown"),
+        "player": _clean(metadata.player_name, "Unknown"),
+        "mode": "osu!mania" if metadata.ruleset == "mania" else "osu!standard",
+        "mods": "+" + "".join(metadata.mods) if metadata.mods else "No Mod",
+        "score_url": f"https://osu.ppy.sh/scores/{metadata.score_id}" if metadata.score_id else "",
+    }
 
 
-def youtube_description(metadata: ScoreMetadata) -> str:
+def _format_template(template: str, metadata: ScoreMetadata) -> str:
+    values = _template_values(metadata)
+    result = template
+    for key, value in values.items():
+        result = result.replace("{" + key + "}", value)
+    return result.replace("<", "＜").replace(">", "＞").strip() or "osu! Replay"
+
+
+def youtube_title(metadata: ScoreMetadata, template: str | None = None) -> str:
+    if template:
+        return _clean(_format_template(template, metadata), "osu! Replay")[:100]
+    values = _template_values(metadata)
+    difficulty = f" [{values['difficulty']}]" if metadata.difficulty else ""
+    return f"{values['rank']} | {values['pp']} | {values['accuracy']} | {values['artist']} - {values['title']}{difficulty}"[:100]
+
+
+def youtube_description(metadata: ScoreMetadata, template: str | None = None) -> str:
+    if template:
+        return _format_template(template, metadata)[:5000]
     mode = "osu!mania" if metadata.ruleset == "mania" else "osu!standard"
     mods = "+" + "".join(metadata.mods) if metadata.mods else "No Mod"
     score_url = f"https://osu.ppy.sh/scores/{metadata.score_id}" if metadata.score_id else None
@@ -144,6 +177,66 @@ class YouTubeUploader:
         except (httpx.HTTPError, OSError) as exc:
             raise YouTubeUploadError("YouTube upload connection failed") from exc
 
+    async def upload_thumbnail(self, video_id: str, image_path: Path) -> None:
+        if not VIDEO_ID_PATTERN.fullmatch(video_id):
+            raise YouTubeUploadError("YouTube thumbnail video ID is invalid")
+        source = image_path.resolve()
+        if not source.is_relative_to(self.settings.output_path.resolve()) or not source.is_file():
+            raise YouTubeUploadError("YouTube thumbnail source is unavailable")
+        timeout = httpx.Timeout(connect=30, read=120, write=120, pool=30)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, transport=self._transport, follow_redirects=False) as client:
+                token = await self._access_token(client)
+                response = await client.post(
+                    THUMBNAILS_URL,
+                    params={"videoId": video_id, "uploadType": "media"},
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "image/jpeg"},
+                    content=await asyncio.to_thread(source.read_bytes),
+                )
+                if response.status_code not in {200, 201}:
+                    raise YouTubeUploadError(f"YouTube thumbnail upload failed: {self._error_detail(response)}")
+        except httpx.HTTPError as exc:
+            raise YouTubeUploadError("YouTube thumbnail connection failed") from exc
+
+    async def add_to_playlists(self, video_id: str, metadata: ScoreMetadata) -> list[str]:
+        if not VIDEO_ID_PATTERN.fullmatch(video_id):
+            raise YouTubeUploadError("YouTube playlist video ID is invalid")
+        rank = (metadata.rank or "").upper().replace("H", "")
+        targets: list[str] = []
+        rank_target = {
+            "X": self.settings.youtube_playlist_x_id,
+            "S": self.settings.youtube_playlist_s_id,
+            "A": self.settings.youtube_playlist_a_id,
+        }.get(rank)
+        if rank_target:
+            targets.append(rank_target)
+        pp = metadata.pp or 0
+        pp_target = (
+            self.settings.youtube_playlist_pp400_id if pp >= 400 else
+            self.settings.youtube_playlist_pp300_id if pp >= 300 else
+            self.settings.youtube_playlist_pp200_id if pp >= 200 else
+            self.settings.youtube_playlist_pp100_id if pp >= 100 else None
+        )
+        if pp_target and pp_target not in targets:
+            targets.append(pp_target)
+        if not targets:
+            return []
+        timeout = httpx.Timeout(connect=30, read=120, write=120, pool=30)
+        added: list[str] = []
+        async with httpx.AsyncClient(timeout=timeout, transport=self._transport, follow_redirects=False) as client:
+            token = await self._access_token(client)
+            for playlist_id in targets:
+                response = await client.post(
+                    PLAYLIST_ITEMS_URL,
+                    params={"part": "snippet"},
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}},
+                )
+                if response.status_code not in {200, 201}:
+                    raise YouTubeUploadError(f"YouTube playlist update failed: {self._error_detail(response)}")
+                added.append(playlist_id)
+        return added
+
     async def _upload(
         self,
         source: Path,
@@ -153,7 +246,7 @@ class YouTubeUploader:
         timeout = httpx.Timeout(connect=30, read=300, write=300, pool=30)
         async with httpx.AsyncClient(timeout=timeout, transport=self._transport, follow_redirects=False) as client:
             token = await self._access_token(client)
-            title = youtube_title(metadata)
+            title = youtube_title(metadata, getattr(self.settings, "youtube_title_template", None))
             total = source.stat().st_size
             session_url = await self._start_session(client, token, total, title, metadata)
             result = await self._send_file(client, token, session_url, source, total, title, progress)
@@ -196,8 +289,8 @@ class YouTubeUploader:
         body = {
             "snippet": {
                 "title": title,
-                "description": youtube_description(metadata),
-                "tags": ["osu!", "osu! replay", metadata.ruleset, "osu! Pulse"],
+                "description": youtube_description(metadata, getattr(self.settings, "youtube_description_template", None)),
+                "tags": list(dict.fromkeys([*getattr(self.settings, "youtube_tags", ("osu!", "osu! Pulse")), metadata.ruleset]))[:30],
                 "categoryId": self.settings.youtube_category_id,
             },
             "status": {
