@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withWorkflow } from "workflow/next";
+import { serverActionAllowedOrigins } from "./src/lib/server-action-origins";
 
 function localWebProxyOrigin() {
   if (process.env.VERCEL !== "1") return null;
@@ -16,6 +17,15 @@ function localWebProxyOrigin() {
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["discord.js"],
+  experimental: {
+    serverActions: {
+      allowedOrigins: serverActionAllowedOrigins({
+        WEB_APP_URL: process.env.WEB_APP_URL,
+        NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+        VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+      }),
+    },
+  },
   async rewrites() {
     const origin = localWebProxyOrigin();
     if (!origin) return [];

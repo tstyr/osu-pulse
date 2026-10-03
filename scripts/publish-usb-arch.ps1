@@ -9,6 +9,13 @@ New-Item -ItemType Directory -Path $destination -Force | Out-Null
 # transient state, media and live database files out of the Arch package.
 & robocopy $projectRoot $destination /E /FFT /R:1 /W:1 /NP /NFL /NDL /XD .git node_modules .next .vercel work bot-audio .venv .venv-mania __pycache__ .pytest_cache downloads output temp logs /XF '*.pyc' '*.tsbuildinfo' '*.exe' '*.dll' '*.db' 'beatmap-index.json' 'stats.json' 'youtube-pending.json'
 if ($LASTEXITCODE -gt 7) { throw "USB application copy failed: $LASTEXITCODE" }
+# Project identifiers are portable; CLI authentication is deliberately not.
+$vercelProjectPath = Join-Path $projectRoot '.vercel\project.json'
+if (Test-Path -LiteralPath $vercelProjectPath) {
+    $sharedPlatform = Join-Path $usbPath 'osu-pulse-shared\platform'
+    New-Item -ItemType Directory -Path $sharedPlatform -Force | Out-Null
+    Copy-Item -LiteralPath $vercelProjectPath -Destination (Join-Path $sharedPlatform 'vercel-project.json') -Force
+}
 # Shell scripts must have Unix line endings, including files edited on Windows.
 foreach ($script in (Get-ChildItem -LiteralPath $destination -Filter '*.sh' -Recurse -File)) {
     $normalized = [IO.File]::ReadAllText($script.FullName).Replace("`r`n", "`n")

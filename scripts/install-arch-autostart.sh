@@ -10,7 +10,7 @@ if [[ ! -d "$shared_mount/osu-pulse-shared" ]]; then
   exit 1
 fi
 missing_commands=()
-for command in node npm python3 java ffmpeg pg_dump pg_restore pg_isready xvfb-run xauth; do
+for command in node npm python3 java ffmpeg pg_dump pg_restore pg_isready xvfb-run xauth cloudflared; do
   command -v "$command" >/dev/null || missing_commands+=("$command")
 done
 if (( ${#missing_commands[@]} > 0 )); then
@@ -55,6 +55,7 @@ write_unit "osu-pulse-web" "osu! Pulse Web UI" "npm run start:local"
 write_unit "osu-pulse-bot" "osu! Pulse Discord Bot" "npm run bot:start"
 write_unit "osu-pulse-renderer" "osu! Pulse Replay Renderer" "xvfb-run -a renderer/.venv/bin/python -m renderer.server"
 write_unit "osu-pulse-lavalink" "osu! Pulse Lavalink" "./node_modules/.bin/dotenv -e .env.local -- node lavalink/run-local.mjs"
+write_unit "osu-pulse-tunnel" "osu! Pulse public tunnel and Vercel bridge" "bash scripts/start-public-tunnel.sh"
 
 cat > "$unit_dir/osu-pulse-db-sync.service" <<UNIT
 [Unit]
@@ -109,7 +110,7 @@ UNIT
 cat > "$unit_dir/osu-pulse.target" <<UNIT
 [Unit]
 Description=osu! Pulse local services
-Wants=osu-pulse-db-sync.service osu-pulse-db-snapshot.timer osu-pulse-web.service osu-pulse-bot.service osu-pulse-renderer.service osu-pulse-lavalink.service
+Wants=osu-pulse-db-sync.service osu-pulse-db-snapshot.timer osu-pulse-web.service osu-pulse-bot.service osu-pulse-renderer.service osu-pulse-lavalink.service osu-pulse-tunnel.service
 After=network-online.target
 
 [Install]

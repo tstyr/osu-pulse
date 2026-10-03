@@ -12,6 +12,17 @@ export function renderRequestSource(job: {
   return job.scheduledAt ? "scheduled" : "manual";
 }
 
+export function renderRequestMetadata(
+  job: Parameters<typeof renderRequestSource>[0],
+  incoming?: Record<string, unknown> | null,
+) {
+  return {
+    ...job.metadata,
+    ...incoming,
+    request_source: renderRequestSource(job),
+  };
+}
+
 export function automaticRenderingAllowed(dependencies: Record<string, unknown>): boolean {
   const stats = dependencies.render_stats;
   const policy = stats && typeof stats === "object" && "start_policy" in stats

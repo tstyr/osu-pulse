@@ -18,7 +18,7 @@ trap on_exit EXIT
 [[ -f "$usb_app/package.json" && -d "$usb_root/osu-pulse-shared" ]] || { echo 'USB application package is incomplete.'; exit 1; }
 
 echo '[1/7] Installing Arch runtime packages'
-sudo pacman -S --needed nodejs npm python python-pip jre-openjdk-headless ffmpeg postgresql rsync git curl unzip yt-dlp xorg-server-xvfb xorg-xauth mesa
+sudo pacman -S --needed nodejs npm python python-pip jre-openjdk-headless ffmpeg postgresql rsync git curl unzip yt-dlp xorg-server-xvfb xorg-xauth mesa cloudflared
 
 echo '[2/7] Registering a stable USB mount for automatic startup'
 shared_mount=/mnt/osu-pulse
@@ -38,7 +38,9 @@ shared_root="$shared_mount/osu-pulse-shared"
 echo '[3/7] Updating Arch application files from USB'
 # Stop existing services before updating or restoring their database.
 if systemctl --user cat osu-pulse.target >/dev/null 2>&1; then
-  systemctl --user stop osu-pulse-db-snapshot.timer osu-pulse-web.service osu-pulse-bot.service osu-pulse-renderer.service osu-pulse-lavalink.service
+  for unit in osu-pulse-db-snapshot.timer osu-pulse-tunnel.service osu-pulse-web.service osu-pulse-bot.service osu-pulse-renderer.service osu-pulse-lavalink.service; do
+    if systemctl --user cat "$unit" >/dev/null 2>&1; then systemctl --user stop "$unit"; fi
+  done
   systemctl --user stop osu-pulse-db-sync.service osu-pulse.target
 fi
 mkdir -p "$install_root"
@@ -142,6 +144,21 @@ PY
 fi
 npm run build
 xvfb-run -a renderer/.venv-mania/bin/python renderer/mania_cli.py --source-path renderer/local/osu-mania-renderer --probe
+
+# Match the CLI version used by the verified Windows sync script. Keep these
+# tools outside application dependencies and don't copy Windows OAuth tokens.
+npm install --prefix work/vercel-cli --no-audit --no-fund vercel@54.13.0
+vercel_cli="$install_root/work/vercel-cli/node_modules/.bin/vercel"
+if [[ ! -f .vercel/project.json && -f "$shared_root/platform/vercel-project.json" ]]; then
+  mkdir -p .vercel
+  install -m 600 "$shared_root/platform/vercel-project.json" .vercel/project.json
+fi
+if [[ -t 0 ]]; then
+  "$vercel_cli" whoami >/dev/null 2>&1 || "$vercel_cli" login
+  [[ -f .vercel/project.json ]] || "$vercel_cli" link
+else
+  echo "[INFO] For first-time Vercel access run: $vercel_cli login (and link, if the project is not linked)."
+fi
 
 echo '[7/7] Enabling services and five-minute database snapshots'
 bash scripts/install-arch-autostart.sh "$shared_mount"

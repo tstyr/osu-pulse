@@ -31,7 +31,7 @@ import {
 export { parseScoreUrl, RenderApiError } from "./score-url";
 import { RenderApiError } from "./score-url";
 import { isAllowedCompletedVideoUrl } from "./video-url";
-import { renderRequestSource } from "./request-source";
+import { renderRequestMetadata, renderRequestSource } from "./request-source";
 
 const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
@@ -382,6 +382,7 @@ export async function claimCloudRenderJob(rendererId: string, allowAutomatic = t
       status: "claimed",
       progress: Math.max(candidate.progress, 0),
       message: "ローカル Renderer がジョブを取得しました",
+      metadata: renderRequestMetadata(candidate),
       claimedBy: rendererId,
       claimedAt: candidate.claimedAt ?? now,
       leaseExpiresAt: new Date(now.getTime() + CLOUD_RENDER_LEASE_SECONDS * 1_000),
@@ -426,11 +427,7 @@ export async function updateCloudRenderJob(
     status: input.status,
     progress: input.status === "completed" ? 100 : input.progress,
     message: input.message,
-    metadata: {
-      ...job.metadata,
-      ...input.metadata,
-      request_source: renderRequestSource(job),
-    } as CloudRenderMetadata,
+    metadata: renderRequestMetadata(job, input.metadata) as CloudRenderMetadata,
     errorCode: input.errorCode,
     error: input.error,
     videoUrl: input.videoUrl,

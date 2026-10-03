@@ -44,6 +44,14 @@ open shell scripts as text or silently refuse files without an executable bit.
 Use the terminal command above. Optionally enable direct launching with
 `chmod +x START_ARCH.sh scripts/*.sh`; this may not persist on exFAT.
 
+The USB setup also installs an Arch public-tunnel service. Its generated URL is
+saved in `work/public-web-url.txt`, and Vercel's proxy origin is updated when it
+changes. First-time Arch setup requires a separate `vercel login`; Windows CLI
+tokens are not copied. The launcher prompts in a terminal, or use
+`work/vercel-cli/node_modules/.bin/vercel login` afterward. If no project link
+was provided by the USB package, run the same CLI with `link`. Logs are in
+`work/vercel-proxy-sync.log`. Local Bot/Renderer remain usable before login.
+
 Install Node.js, Python, PostgreSQL, Java, FFmpeg, danser, and the mania renderer
 separately on Arch. Do not reuse Windows `node_modules`, `.venv`, `.exe` files,
 or a PostgreSQL data directory across operating systems.
