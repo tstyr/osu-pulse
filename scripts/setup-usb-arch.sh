@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+if [[ ! -t 0 && -z "${OSU_PULSE_ARCH_TERMINAL:-}" && ( -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ) ]]; then
+  exec bash "$(dirname "${BASH_SOURCE[0]}")/arch-launcher.sh" --setup "$@"
+fi
+
 usb_app="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usb_root="$(dirname "$usb_app")"
 install_root="${XDG_DATA_HOME:-$HOME/.local/share}/osu-pulse"
@@ -121,6 +125,13 @@ bash scripts/sync-shared-database.sh pull
 echo '[5/7] Installing Node and Python dependencies'
 bash scripts/install-arch-renderers.sh
 npm ci
+# Installed shortcuts live on the native filesystem, not on exFAT.
+application_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$application_dir"
+node scripts/arch-desktop-entry.mjs native "$install_root/scripts/arch-launcher.sh" --start > "$application_dir/osu-pulse.desktop"
+node scripts/arch-desktop-entry.mjs native "$install_root/scripts/arch-launcher.sh" --setup > "$application_dir/osu-pulse-setup.desktop"
+if command -v update-desktop-database >/dev/null; then update-desktop-database "$application_dir" || true; fi
+echo '[OK] Application menu shortcuts: osu! Pulse / osu! Pulse Setup & Update'
 python3 -m venv renderer/.venv
 renderer/.venv/bin/python -m pip install -r renderer/requirements.txt
 python3 -m venv renderer/.venv-mania

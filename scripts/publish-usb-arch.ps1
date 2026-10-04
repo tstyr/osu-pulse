@@ -22,7 +22,13 @@ foreach ($script in (Get-ChildItem -LiteralPath $destination -Filter '*.sh' -Rec
     [IO.File]::WriteAllText($script.FullName, $normalized, [Text.UTF8Encoding]::new($false))
 }
 $launcher = Join-Path $usbPath 'START_OSU_PULSE_ARCH.sh'
-$text = "#!/usr/bin/env bash`nset -Eeuo pipefail`nusb_root=`"`$(cd `"`$(dirname `"`${BASH_SOURCE[0]}`")`" && pwd)`"`nexec bash `"`$usb_root/osu-pulse-arch/scripts/setup-usb-arch.sh`" `"`$@`"`n"
+$text = [IO.File]::ReadAllText((Join-Path $projectRoot 'START_OSU_PULSE_ARCH.sh')).Replace("`r`n", "`n")
 [IO.File]::WriteAllText($launcher, $text, [Text.UTF8Encoding]::new($false))
+$desktopText = (& node (Join-Path $PSScriptRoot 'arch-desktop-entry.mjs') usb) -join "`n"
+if ($LASTEXITCODE -ne 0) { throw 'Could not generate the Arch desktop launcher.' }
+[IO.File]::WriteAllText((Join-Path $usbPath 'START_OSU_PULSE_ARCH.desktop'), $desktopText + "`n", [Text.UTF8Encoding]::new($false))
+$readmeText = [IO.File]::ReadAllText((Join-Path $projectRoot 'README_ARCH.txt')).Replace("`r`n", "`n")
+[IO.File]::WriteAllText((Join-Path $usbPath 'README_ARCH.txt'), $readmeText, [Text.UTF8Encoding]::new($false))
 Write-Output "[OK] USB Arch package updated: $destination"
 Write-Output "[OK] USB launcher: $launcher"
+Write-Output "[OK] Terminal shortcut: $(Join-Path $usbPath 'START_OSU_PULSE_ARCH.desktop')"

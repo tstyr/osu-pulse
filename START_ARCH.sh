@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -t 0 && ( -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ) ]]; then
+  exec bash "$project_root/scripts/arch-launcher.sh" --auto "$@"
+fi
 mkdir -p "$project_root/work"
 log_path="$project_root/work/arch-setup.log"
 exec > >(tee -a "$log_path") 2>&1
