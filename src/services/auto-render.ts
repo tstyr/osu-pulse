@@ -18,13 +18,29 @@ import {
   type AutoRenderSettings,
 } from "../lib/control/auto-render-settings";
 import { getOsuUser } from "../lib/osu/client";
-import { CLOUD_RENDER_STATUSES, TERMINAL_CLOUD_RENDER_STATUSES } from "../lib/render/constants";
+import { CLOUD_RENDER_STATUSES, TERMINAL_CLOUD_RENDER_STATUSES, type CloudRenderStatus } from "../lib/render/constants";
 
 const SETTINGS_ID = "primary";
 const MAX_ACTIVE_CLOUD_JOBS = 4;
 const ACTIVE_STATUSES = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
 );
+const AUTO_RENDER_RETRY_DELAY_MS = 30 * 60_000;
+const MAX_AUTO_RENDER_ATTEMPTS = 3;
+const PERMANENT_RENDER_ERRORS = new Set(["INVALID_OSU_URL", "INVALID_SCORE_ID", "SCORE_NOT_FOUND", "REPLAY_UNAVAILABLE", "INVALID_REPLAY", "UNSUPPORTED_RULESET", "INVALID_OPTIONS"]);
+
+export function autoRenderSourceHandled(
+  jobs: Array<{ status: CloudRenderStatus; errorCode: string | null; updatedAt: Date }>,
+  now = Date.now(),
+) {
+  if (jobs.some((job) => job.status !== "failed")) return true;
+  const failures = jobs.filter((job) => job.status === "failed");
+  if (!failures.length) return false;
+  // Respect explicit cancellation and successful renders. Only transient
+  // failures re-enter automatic scheduling, with a bounded retry budget.
+  if (failures.length >= MAX_AUTO_RENDER_ATTEMPTS || failures.some((job) => PERMANENT_RENDER_ERRORS.has(job.errorCode ?? ""))) return true;
+  return now - Math.max(...failures.map((job) => job.updatedAt.getTime())) < AUTO_RENDER_RETRY_DELAY_MS;
+}
 
 export function matchesAutoRenderScore(
   settings: AutoRenderSettings,
@@ -142,14 +158,21 @@ export async function enqueueEligibleAutoRenders() {
   if (matched.length === 0) return { enabled: true, matched: 0, queued: 0, remaining: 0 };
 
   const [existingJobs, existingVideos, active, targetAccounts] = await Promise.all([
-    db.select({ sourceHash: cloudRenderJobs.sourceHash }).from(cloudRenderJobs),
+    db.select({ sourceHash: cloudRenderJobs.sourceHash, status: cloudRenderJobs.status, errorCode: cloudRenderJobs.errorCode, updatedAt: cloudRenderJobs.updatedAt })
+      .from(cloudRenderJobs),
     db.select({ scoreId: renderVideos.scoreId }).from(renderVideos),
     db.select({ value: count() }).from(cloudRenderJobs).where(inArray(cloudRenderJobs.status, ACTIVE_STATUSES)),
     db.select({ id: accounts.id, osuUserId: accounts.osuUserId, username: accounts.username })
       .from(accounts)
       .where(inArray(accounts.id, accountIds)),
   ]);
-  const knownHashes = new Set(existingJobs.map((job) => job.sourceHash));
+  const jobsByHash = new Map<string, typeof existingJobs>();
+  for (const job of existingJobs) {
+    const history = jobsByHash.get(job.sourceHash) ?? [];
+    history.push(job);
+    jobsByHash.set(job.sourceHash, history);
+  }
+  const knownHashes = new Set([...jobsByHash].flatMap(([hash, jobs]) => autoRenderSourceHandled(jobs) ? [hash] : []));
   const renderedScoreIds = new Set(existingVideos.flatMap((video) => video.scoreId == null ? [] : [String(video.scoreId)]));
   const handledScoreIds = new Set(matched.flatMap((score) => (
     knownHashes.has(sourceHash(score.osuScoreId)) || renderedScoreIds.has(score.osuScoreId)

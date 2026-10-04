@@ -16,23 +16,23 @@ import { resolve } from "node:path";
 import {
   getAccountsByDiscord,
   listDiscordAccountAssignments,
-} from "@/db/repository";
-import { getRecentScores } from "@/lib/osu/client";
-import type { OsuMode } from "@/lib/osu/modes";
-import type { OsuScore } from "@/lib/osu/types";
-import { getControlSettings } from "@/lib/control/settings";
-import { createCloudRenderBatch } from "@/db/render-queue-repository";
-import { publicAppUrl } from "@/lib/public-app-url";
+} from "../src/db/repository";
+import { getRecentScores } from "../src/lib/osu/client";
+import type { OsuMode } from "../src/lib/osu/modes";
+import type { OsuScore } from "../src/lib/osu/types";
+import { getControlSettings } from "../src/lib/control/settings";
+import { createCloudRenderBatch } from "../src/db/render-queue-repository";
+import { publicAppUrl } from "../src/lib/public-app-url";
 
 import {
   downloadDiscordReplay,
   RendererClient,
   RendererClientError,
-  type RendererHealth,
   type RenderJobStatus,
   type RenderOptions,
 } from "./renderer-client";
 import { renderAccountChoiceName } from "./render-choice";
+import { renderMissingDependencies } from "./render-readiness";
 
 type RenderableRecentPlay = {
   scoreId: string;
@@ -248,6 +248,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   TOO_MANY_JOBS: "⚠️ 実行中または待機中のJobが上限に達しています。完了後に再試行してください。",
   DUPLICATE_JOB: "⚠️ 同じReplayと設定のJobがすでに進行中です。",
   VIDEO_UPLOAD_FAILED: "❌ 完成動画を外部ストレージへアップロードできませんでした。R2またはVercel Blob設定を確認してください。",
+  INVALID_OPTIONS: "❌ このモードで選択したレンダー設定は利用できません。maniaでは速度Original・モーションブラーOFFを選択してください。",
+  DISK_FULL: "❌ 動画を保存するディスクの空き容量が不足しています。",
+  STORAGE_UNAVAILABLE: "❌ USB共有ストレージを利用できません。OSU_PULSEを接続・マウントしてください。WindowsはFドライブ、Archは共有マウント先を確認してください。",
+  UNAUTHORIZED: "❌ Rendererの接続トークンが一致していません。BotとRendererのRENDER_SERVER_TOKEN設定を確認してください。",
 };
 
 function numberEnv(name: string, fallback: number) {
@@ -307,10 +311,9 @@ export async function handleRenderAutocomplete(interaction: AutocompleteInteract
   }
 }
 
-function downloadComponents(url: string, youtubeUrl: string | null, provider?: "r2" | "vercel-blob" | "youtube", highlightUrl?: string | null) {
-  if (url.length > 512) return [];
+export function downloadComponents(url: string, youtubeUrl: string | null, provider?: "r2" | "vercel-blob" | "youtube", highlightUrl?: string | null) {
   const row = new ActionRowBuilder<ButtonBuilder>();
-  if (provider !== "youtube") {
+  if (provider !== "youtube" && url.length <= 512) {
     row.addComponents(
       new ButtonBuilder()
         .setLabel("動画をダウンロード")
@@ -319,13 +322,14 @@ function downloadComponents(url: string, youtubeUrl: string | null, provider?: "
         .setURL(url),
     );
   }
-  if (youtubeUrl && youtubeUrl.length <= 512 && /^https:\/\/youtu\.be\/[A-Za-z0-9_-]+$/.test(youtubeUrl)) {
+  const videoUrl = youtubeUrl ?? (provider === "youtube" ? url : null);
+  if (videoUrl && videoUrl.length <= 512 && /^https:\/\/youtu\.be\/[A-Za-z0-9_-]+$/.test(videoUrl)) {
     row.addComponents(
       new ButtonBuilder()
         .setLabel("YouTubeで見る")
         .setEmoji("▶️")
         .setStyle(ButtonStyle.Link)
-        .setURL(youtubeUrl),
+        .setURL(videoUrl),
     );
   }
   if (highlightUrl && highlightUrl.length <= 512 && /^https:\/\//.test(highlightUrl)) {
@@ -333,7 +337,7 @@ function downloadComponents(url: string, youtubeUrl: string | null, provider?: "
       new ButtonBuilder().setLabel("ハイライト").setEmoji("✂️").setStyle(ButtonStyle.Link).setURL(highlightUrl),
     );
   }
-  return [row];
+  return row.components.length ? [row] : [];
 }
 
 function renderJobControls(job: RenderJobStatus, discordUserId: string) {
@@ -405,6 +409,7 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
   const replay = interaction.options.getAttachment("replay");
   const accountScoreId = interaction.options.getString("account")?.trim() || null;
   const sourceCount = Number(Boolean(url)) + Number(Boolean(replay)) + Number(Boolean(accountScoreId));
+  let ruleset: "osu" | "mania" | undefined;
   if (sourceCount > 1) {
     await interaction.reply({ content: "❌ アカウント履歴、リザルトURL、Replayファイルはどれか1つだけ指定してください。", flags: MessageFlags.Ephemeral });
     return;
@@ -424,16 +429,19 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       await interaction.reply({ content: "❌ 選択したプレイが正しくありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
       return;
     }
+    // Recent-play lookup can need several API requests. Acknowledge before
+    // waiting so Discord does not expire the command at three seconds.
+    await interaction.deferReply();
     let recent: RenderableRecentResult;
     try {
       recent = await getRenderableRecentPlays(interaction.user.id);
     } catch (error) {
       console.error("[render] recent score lookup failed:", error);
-      await interaction.reply({ content: ERROR_MESSAGES.OSU_API_UNAVAILABLE, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: ERROR_MESSAGES.OSU_API_UNAVAILABLE });
       return;
     }
     if (recent.accountCount === 0) {
-      await interaction.reply({ content: "❌ 先に `/osu link` でアカウントを登録してください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "❌ 先に `/osu link` でアカウントを登録してください。" });
       return;
     }
     const [, selectedRuleset, selectedScoreId] = selection;
@@ -441,10 +449,11 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
       candidate.scoreId === selectedScoreId && (!selectedRuleset || candidate.ruleset === selectedRuleset)
     ));
     if (!play) {
-      await interaction.reply({ content: "❌ このプレイはstd/maniaの直近100件にないか、ダウンロード可能なReplayがありません。候補から選び直してください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "❌ このプレイはstd/maniaの直近100件にないか、ダウンロード可能なReplayがありません。候補から選び直してください。" });
       return;
     }
     url = `https://osu.ppy.sh/scores/${play.scoreId}`;
+    ruleset = play.ruleset;
   }
 
   const options: RenderOptions = {
@@ -454,7 +463,7 @@ export async function handleRenderCommand(interaction: ChatInputCommandInteracti
     motionBlur: interaction.options.getBoolean("motion_blur") ?? false,
     highlight: interaction.options.getBoolean("highlight") ?? false,
   };
-  await executeRender(interaction, url, replay, options);
+  await executeRender(interaction, url, replay, options, ruleset);
 }
 
 export async function handleRenderBatchCommand(interaction: ChatInputCommandInteraction) {
@@ -490,24 +499,25 @@ async function executeRender(
   url: string | null,
   replay: Parameters<typeof downloadDiscordReplay>[0] | null,
   options: RenderOptions,
+  ruleset?: "osu" | "mania",
 ) {
-  await interaction.deferReply();
+  if (!interaction.deferred && !interaction.replied) await interaction.deferReply();
   let progressMessage: Message | null = null;
-  const client = new RendererClient();
 
   try {
+    const client = new RendererClient();
     const health = await client.health();
-    if (
-      !health.danser ||
-      !health.mania_renderer ||
-      !health.ffmpeg ||
-      !health.osu_songs ||
-      !health.standard_skin ||
-      !health.mania_skin ||
-      !health.songs_index_ready ||
-      (url && !health.osu_api)
-    ) {
-      await interaction.editReply({ content: degradedMessage(health), embeds: [] });
+    let replayBytes: Uint8Array | undefined;
+    if (replay) {
+      replayBytes = await downloadDiscordReplay(replay, numberEnv("RENDER_MAX_REPLAY_BYTES", 16 * 1024 * 1024));
+      if (replayBytes[0] === 0) ruleset = "osu";
+      else if (replayBytes[0] === 3) ruleset = "mania";
+    } else if (!ruleset && url) {
+      ruleset = /\/scores\/(osu|mania)\//.exec(url)?.[1] as "osu" | "mania" | undefined;
+    }
+    const missing = renderMissingDependencies(health, Boolean(url), ruleset);
+    if (missing.length) {
+      await interaction.editReply({ content: degradedMessage(missing), embeds: [] });
       return;
     }
     await interaction.editReply({ content: url ? "🔎 osu! Resultを確認しています..." : "🔎 Replayファイルを確認しています..." });
@@ -517,22 +527,29 @@ async function executeRender(
     if (url) {
       submitted = await client.submitScore(interaction.user.id, url, options);
     } else {
-      const maximum = numberEnv("RENDER_MAX_REPLAY_BYTES", 16 * 1024 * 1024);
-      const bytes = await downloadDiscordReplay(replay!, maximum);
-      submitted = await client.submitReplay(interaction.user.id, bytes, options);
+      submitted = await client.submitReplay(interaction.user.id, replayBytes!, options);
     }
 
     const timeoutAt = Date.now() + numberEnv("RENDER_POLL_TIMEOUT_MS", 2_100_000);
     const interval = numberEnv("RENDER_POLL_INTERVAL_MS", 4_000);
     let fingerprint = "";
+    let connectionFailures = 0;
     while (Date.now() < timeoutAt) {
       let job: RenderJobStatus;
       try {
         job = await client.getJob(submitted.job_id);
+        connectionFailures = 0;
       } catch (error) {
         if (error instanceof RendererClientError && ["RENDERER_OFFLINE", "RENDERER_TIMEOUT"].includes(error.code)) {
-          await progressMessage.edit({ content: "❌ レンダリングサーバーとの接続が切断されました。\n\nレンダリング処理が中断された可能性があります。", embeds: [] });
-          return;
+          connectionFailures += 1;
+          if (connectionFailures >= 5) {
+            await progressMessage.edit({ content: `⚠️ Rendererの状態を確認できません。Jobはキャンセルしていません。\nJob: \`${submitted.job_id}\`\n${publicAppUrl("/dashboard/videos")}`, embeds: [] });
+            return;
+          }
+          await progressMessage.edit({ content: `🔄 Rendererの応答を待っています。再接続 ${connectionFailures}/5（処理は継続します）` });
+          fingerprint = "";
+          await new Promise((resolve) => setTimeout(resolve, interval));
+          continue;
         }
         throw error;
       }
@@ -571,18 +588,19 @@ async function executeRender(
           });
         }
         const provider = shared.provider === "r2" ? "Cloudflare R2" : shared.provider === "vercel-blob" ? "Vercel Blob" : "YouTube";
-        const components = downloadComponents(shared.url, job.youtube_url, shared.provider, highlightUrl);
+        const youtubeUrl = job.youtube_url ?? (shared.provider === "youtube" ? shared.url : null);
+        const components = downloadComponents(shared.url, youtubeUrl, shared.provider, highlightUrl);
         const inlineLink = components.length === 0 ? `\n${shared.url}` : "";
         const saved = shared.original_size && shared.original_size > shared.size
           ? ` · 圧縮前 ${fileSizeLabel(shared.original_size)}（${Math.round((1 - shared.size / shared.original_size) * 100)}%削減）`
           : "";
-        const youtube = job.youtube_url
+        const youtube = youtubeUrl
           ? `\n▶️ YouTubeへ${job.youtube_privacy_status === "unlisted" ? "限定公開" : job.youtube_privacy_status === "private" ? "非公開" : "公開"}で投稿しました。`
           : job.youtube_error
             ? "\n⚠️ YouTube自動投稿に失敗しました。Rendererログを確認してください。"
             : "";
         const completed = shared.provider === "youtube"
-          ? `✅ YouTubeへ${job.youtube_privacy_status === "public" ? "公開" : job.youtube_privacy_status === "unlisted" ? "限定公開" : "非公開"}で投稿し、ローカル/R2の動画を削除しました。${highlightUrl ? "\n✂️ ハイライトクリップも生成しました。" : ""}`
+          ? `✅ YouTubeへ投稿しました。${inlineLink}${highlightUrl ? "\n✂️ ハイライトクリップも生成しました。" : ""}`
           : `✅ 圧縮済み動画を${provider}へ保存しました（${fileSizeLabel(shared.size)}${saved}）。${inlineLink}${youtube}${highlightUrl ? "\n✂️ ハイライトクリップも生成しました。" : ""}`;
         await progressMessage.edit({
           content: completed,
@@ -593,9 +611,14 @@ async function executeRender(
       }
       await new Promise((resolve) => setTimeout(resolve, interval));
     }
-    await client.cancel(submitted.job_id).catch(() => undefined);
-    await progressMessage.edit({ content: "❌ Bot側の待機時間を超えたためJobをキャンセルしました。", embeds: [] });
+    await progressMessage.edit({ content: `⏳ Discordでの進捗監視を終了しました。レンダリングは継続します。完了動画とYouTube投稿状況はWeb UIで確認できます。\nJob: \`${submitted.job_id}\`\n${publicAppUrl("/dashboard/videos")}`, embeds: [] });
   } catch (error) {
+    // Deleting the progress message does not cancel the independently running
+    // renderer/YouTube job. Avoid a second edit to the same deleted message.
+    if (typeof error === "object" && error !== null && "code" in error && Number(error.code) === 10008) {
+      console.warn("[render] progress message was deleted; render continues on the server");
+      return;
+    }
     const payload = { content: errorMessage(error), embeds: [] };
     if (progressMessage) await progressMessage.edit(payload);
     else await interaction.editReply(payload);
@@ -649,6 +672,7 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
     const health = await new RendererClient().health();
+    const youtube = health.render_stats?.youtube;
     const embed = new EmbedBuilder()
       .setColor(health.status === "online" ? 0x55dd99 : 0xffaa55)
       .setTitle(`Renderer: ${health.status === "online" ? "Online" : "Degraded"}`)
@@ -661,24 +685,15 @@ export async function handleRenderStatusCommand(interaction: ChatInputCommandInt
         { name: "FFmpeg", value: health.ffmpeg ? "OK" : "NOT FOUND", inline: true },
         { name: "Songs", value: health.osu_songs ? `${health.songs_index_count.toLocaleString()} maps` : "NOT FOUND", inline: true },
         { name: "osu! API", value: health.osu_api ? "OK" : "MISSING CREDENTIALS", inline: true },
-        { name: "YouTube", value: health.youtube_upload ? `AUTO / ${(health.youtube_privacy_status ?? "unlisted").toUpperCase()}` : "NOT CONFIGURED", inline: true },
+        { name: "YouTube", value: youtube?.auth_status === "reauthorization_required" ? "⚠️ 再認証が必要です（Web UIのレンダリング画面）" : health.youtube_upload ? `AUTO / ${(health.youtube_privacy_status ?? "unlisted").toUpperCase()}` : "NOT CONFIGURED", inline: true },
       );
+    if (youtube?.pending_count) embed.addFields({ name: "YouTube再試行待ち", value: `${youtube.pending_count}件`, inline: true });
     await interaction.editReply({ embeds: [embed] });
   } catch {
     await interaction.editReply({ content: "Renderer: Offline\n\nこのPCで `renderer/start_renderer.bat` を起動してください。" });
   }
 }
 
-function degradedMessage(health: RendererHealth) {
-  const missing = [
-    !health.danser && "danser",
-    !health.mania_renderer && "mania Renderer",
-    !health.ffmpeg && "FFmpeg",
-    !health.osu_songs && "osu! Songs",
-    !health.standard_skin && "Appu Skin",
-    !health.mania_skin && "R Skin",
-    !health.songs_index_ready && "Songs Index",
-    !health.osu_api && "osu! API credentials",
-  ].filter(Boolean).join(", ");
-  return `❌ Rendererは起動していますが、必要な設定が不足しています。\n\n不足: ${missing}\n\`renderer/.env\` とRendererコンソールを確認してください。`;
+function degradedMessage(missing: string[]) {
+  return `❌ Rendererは起動していますが、必要な設定が不足しています。\n\n不足: ${missing.join(", ")}\n\`renderer/.env\` とRendererコンソールを確認してください。`;
 }

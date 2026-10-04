@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { cloudRenderJobs, type CloudRenderOptions } from "@/db/schema";
 import { CLOUD_RENDER_STATUSES, TERMINAL_CLOUD_RENDER_STATUSES, type CloudRenderStatus } from "@/lib/render/constants";
 import { parseScoreUrl, RenderApiError } from "@/lib/render/score-url";
+import { renderQueueHasCapacity } from "@/lib/render/queue-capacity";
 
 const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
@@ -42,6 +43,9 @@ export async function createCloudRenderBatch(input: {
     }];
   });
   if (!values.length) return { batchId, created: [] };
+  if (!renderQueueHasCapacity(existing.length, values.length)) {
+    throw new RenderApiError("QUEUE_FULL", "レンダー待機列がいっぱいです。件数を減らすか、完了後に再試行してください。", 429);
+  }
   const created = await db.insert(cloudRenderJobs).values(values).returning();
   return { batchId, created };
 }
@@ -71,7 +75,7 @@ export async function createCloudCompositionJob(input: {
   const [active] = await db.select({ value: count() }).from(cloudRenderJobs).where(
     inArray(cloudRenderJobs.status, ACTIVE_STATUSES),
   );
-  if ((active?.value ?? 0) >= 4) {
+  if (!renderQueueHasCapacity(active?.value ?? 0)) {
     throw new RenderApiError("QUEUE_FULL", "レンダー待機列がいっぱいです。しばらくしてから再試行してください。", 429);
   }
   const duplicate = await db.query.cloudRenderJobs.findFirst({

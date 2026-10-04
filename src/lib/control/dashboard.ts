@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { rendererStatus } from "@/lib/render/server";
 import { cachedAsync } from "@/lib/async-cache";
+import { rendererDiagnostics } from "@/lib/render/diagnostics";
 
 const ACTIVE_RENDER_STATUSES = [
   "queued",
@@ -79,6 +80,9 @@ async function buildDashboardOverview() {
       progress: cloudRenderJobs.progress,
       message: cloudRenderJobs.message,
       metadata: cloudRenderJobs.metadata,
+      errorCode: cloudRenderJobs.errorCode,
+      error: cloudRenderJobs.error,
+      updatedAt: cloudRenderJobs.updatedAt,
       options: cloudRenderJobs.options,
       videoUrl: cloudRenderJobs.videoUrl,
       videoSize: cloudRenderJobs.videoSize,
@@ -106,6 +110,7 @@ async function buildDashboardOverview() {
   const dependencies = objectValue(renderer.dependencies);
   const system = objectValue(dependencies.system);
   const renderStats = objectValue(dependencies.render_stats);
+  const diagnostics = rendererDiagnostics(dependencies);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -122,6 +127,9 @@ async function buildDashboardOverview() {
       capacity: numberValue(dependencies.capacity) || 1,
       activeCount: numberValue(dependencies.local_rendering),
       encoder: dependencies.encoder ?? (dependencies.amf ? "h264_amf" : dependencies.nvenc ? "h264_nvenc" : "libx264"),
+      storage: diagnostics.storage,
+      youtube: diagnostics.youtube,
+      startPolicy: diagnostics.startPolicy,
     },
     system: {
       cpuPercent: numberValue(system.cpu_percent),
@@ -132,6 +140,7 @@ async function buildDashboardOverview() {
       memoryTotalBytes: numberValue(system.memory_total_bytes),
       memoryPercent: numberValue(system.memory_percent),
       diskUsedBytes: numberValue(system.disk_used_bytes),
+      diskAvailable: typeof system.disk_available === "boolean" ? system.disk_available : null,
       diskTotalBytes: numberValue(system.disk_total_bytes),
       diskPercent: numberValue(system.disk_percent),
       networkReceivedBytes: numberValue(system.network_received_bytes),
@@ -158,6 +167,7 @@ async function buildDashboardOverview() {
     recentJobs: recentJobs.map((job) => ({
       ...job,
       createdAt: job.createdAt.toISOString(),
+      updatedAt: job.updatedAt.toISOString(),
       completedAt: job.completedAt?.toISOString() ?? null,
     })),
   };

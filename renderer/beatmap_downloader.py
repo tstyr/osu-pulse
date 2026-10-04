@@ -42,6 +42,8 @@ class BeatmapDownloader:
             return await self._install_locked(beatmapset_id)
 
     async def _install_locked(self, beatmapset_id: int) -> Path:
+        if not self.settings.songs_path.is_dir():
+            raise RenderError(ErrorCode.STORAGE_UNAVAILABLE, "Songs storage is unavailable; reconnect the configured drive", http_status=503)
         suffix = "n" if self.settings.beatmap_download_no_video else ""
         url = f"{DOWNLOAD_BASE_URL}/{beatmapset_id}{suffix}"
         archive = self.settings.temp_path / f"beatmap-{beatmapset_id}-{uuid.uuid4().hex}.osz"
@@ -66,7 +68,7 @@ class BeatmapDownloader:
                             total += len(chunk)
                             if total > self.settings.max_beatmapset_bytes:
                                 raise RenderError(ErrorCode.BEATMAP_DOWNLOAD_FAILED, "Beatmapset archive exceeds the configured size limit")
-                            handle.write(chunk)
+                            await asyncio.to_thread(handle.write, chunk)
             except RenderError:
                 raise
             except (httpx.HTTPError, OSError) as exc:
@@ -81,9 +83,11 @@ class BeatmapDownloader:
             except RenderError:
                 raise
             except (zipfile.BadZipFile, OSError) as exc:
+                LOGGER.exception("beatmapset=%s archive extraction failed", beatmapset_id)
+                detail = f" (WinError {exc.winerror})" if isinstance(exc, OSError) and getattr(exc, "winerror", None) else f" (errno {exc.errno})" if isinstance(exc, OSError) and exc.errno else " (invalid ZIP)"
                 raise RenderError(
                     ErrorCode.BEATMAP_DOWNLOAD_FAILED,
-                    "Beatmapset archive could not be extracted",
+                    "Beatmapset archive could not be extracted" + detail,
                     http_status=503,
                 ) from exc
             LOGGER.info("beatmapset=%s downloaded_bytes=%s destination=%s", beatmapset_id, total, destination)

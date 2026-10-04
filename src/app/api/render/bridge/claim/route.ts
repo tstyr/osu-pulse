@@ -4,6 +4,7 @@ import { renderApiError } from "@/lib/render/api";
 import { getBridgeConfiguration } from "@/lib/control/settings";
 import { claimCloudRenderJob, heartbeatRenderer, requireBridgeAccess } from "@/lib/render/server";
 import { automaticRenderingAllowed, renderRequestSource } from "@/lib/render/request-source";
+import { rendererStorageAvailable } from "@/lib/render/diagnostics";
 
 const schema = z.object({
   rendererId: z.string().min(1).max(64),
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
     const configuration = await getBridgeConfiguration();
     const activeCount = input.activeCount ?? (input.busy ? 1 : 0);
     const capacity = input.capacity ?? 1;
-    if (activeCount >= capacity || input.restartRequired) {
+    if (activeCount >= capacity || input.restartRequired || !rendererStorageAvailable(input.dependencies)) {
       return Response.json({ job: null, configuration });
     }
     const job = await claimCloudRenderJob(input.rendererId, automaticRenderingAllowed(input.dependencies));

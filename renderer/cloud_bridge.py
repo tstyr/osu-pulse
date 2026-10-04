@@ -157,9 +157,10 @@ class CloudRenderBridge:
         if encoder == "auto":
             encoder = "h264_nvenc" if self.dependencies.nvenc else "h264_amf" if self.dependencies.amf else "libx264"
         metrics = await self.metrics.snapshot(self.manager)
+        storage_ready = metrics.get("render_stats", {}).get("storage", {}).get("available", True)
         return {
             "rendererId": self.settings.renderer_id,
-            "status": self.dependencies.status,
+            "status": self.dependencies.status if storage_ready else "degraded",
             "busy": len(active_ids) >= capacity,
             "activeCount": len(active_ids),
             "capacity": capacity,
@@ -207,6 +208,8 @@ class CloudRenderBridge:
             self._jobs.pop(cloud_id, None)
 
     async def _fill_capacity(self) -> None:
+        if not await asyncio.to_thread(lambda: self.manager.storage_snapshot()["available"]):
+            return
         while len(self._jobs) < self.settings.max_concurrent_renders and not self._restart_required:
             claimed = await self._claim()
             if not claimed:

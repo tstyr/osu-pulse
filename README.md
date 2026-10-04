@@ -12,6 +12,9 @@ osu!の成長記録、Discordへのリザルト通知、毎日のDM、リマイ�
 - YouTube投稿成功をサムネイル等の後処理より先に記録し、キャンセル／タイムアウトでは関連プロセスを終了します。未投稿動画と処理中ファイルは期限削除から保護します。
 - Web UIのポーリング重複を抑え、キュー操作中の自動更新による巻き戻りを防止します。個人グラフの集計を再利用し、概要統計はDB側でまとめて計算します。
 - Windows／ArchのUSB共有とDB世代管理は[SHARED_STORAGE.md](SHARED_STORAGE.md)を参照してください。環境変数・DBバックアップ・音源・動画はGit管理しません。
+- 手動レンダーの受付上限は自動レンダーの先行予約数（4本）と分離し、全体の待機列は最大100件です。実際の同時処理数は設定した1〜2本のままです。
+- USB保存先が切断された場合は新規処理を保留し、未投稿動画の再試行情報を保持します。再接続を5秒ごとに確認し、Songsのインデックスを再構築して復旧します。
+- Discordの進捗監視が時間切れ、通信断、メッセージ削除になっても、Rendererの処理を勝手にキャンセルしません。完成動画はWeb UIで確認できます。
 
 検証は`npm test`、`npm run typecheck`、`npm run lint`、`npm run build`、`python -m unittest discover -s renderer/tests -t .`で実行できます。GitHub ActionsでもNode/WebとRendererを自動検証します。
 
@@ -138,6 +141,8 @@ renderer\.venv\Scripts\python.exe -m renderer.configure_youtube C:\path\to\clien
 ```
 
 認証後に`renderer/start_renderer.bat`を再起動します。以後、レンダー本体の完了後に`判定 | pp | 精度 | Artist - 曲名 [難易度]`形式のタイトルで公開投稿し、登録者への新着通知は送りません。`YOUTUBE_DELETE_AFTER_UPLOAD=true`では、YouTubeが投稿成功を返した後に同じJob IDのローカルMP4とR2オブジェクトを削除します。成功記録はGit管理外の`renderer/youtube-uploads.json`へ先に保存されます。
+
+概要／レンダー画面に「YouTubeの再認証が必要です」と表示され、最新エラーが`invalid_grant`の場合は、同じ設定コマンドでGoogleの認証をやり直してください。管理画面へのログインとは別の認証です。新しい認証をRendererへ反映すると、古い認証エラーの待ち時間を待たずに未投稿動画を再試行します。USBの動画保存先が使えない間は再試行を保留し、動画の再生成や重複投稿は行いません。
 
 `YOUTUBE_PRIVACY_STATUS=public`を要求しますが、2020年7月28日以降に作成された未監査のYouTube APIプロジェクトはGoogle側で非公開に制限される場合があります。公開を保証するにはGoogleのAPIコンプライアンス監査が必要です。RendererとDiscordはAPIが実際に返した公開状態を表示します。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import shutil
 import socket
 from dataclasses import dataclass
@@ -311,8 +312,14 @@ class Settings:
         )
 
     def ensure_directories(self) -> None:
-        for path in (self.temp_path, self.output_path, self.log_path):
+        for path in (self.temp_path, self.log_path):
             path.mkdir(parents=True, exist_ok=True)
+        try:
+            self.output_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Keep the health/control API reachable during a removable-drive
+            # outage. JobManager rejects new renders until storage returns.
+            logging.getLogger("renderer.config").warning("Output storage unavailable: %s", exc)
 
 
 settings = Settings.from_env()

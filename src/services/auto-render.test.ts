@@ -4,7 +4,7 @@ import {
   autoRenderSettingsSchema,
   defaultAutoRenderSettings,
 } from "../lib/control/auto-render-settings";
-import { matchesAutoRenderScore, prioritizeAutoRenderScores } from "./auto-render";
+import { autoRenderSourceHandled, matchesAutoRenderScore, prioritizeAutoRenderScores } from "./auto-render";
 
 const score = {
   osuScoreId: "7369136249",
@@ -49,5 +49,27 @@ describe("auto render conditions", () => {
     ];
     const prioritized = prioritizeAutoRenderScores(scores, new Set(["1"]));
     expect(prioritized.map((item) => item.osuScoreId)).toEqual(["2", "3"]);
+  });
+});
+
+describe("automatic render retries", () => {
+  const now = Date.parse("2026-10-05T00:00:00Z");
+  const oldFailure = { status: "failed" as const, errorCode: "BEATMAP_DOWNLOAD_FAILED", updatedAt: new Date(now - 31 * 60_000) };
+
+  it("retries a transient failure after a cooldown rather than blocking it forever", () => {
+    expect(autoRenderSourceHandled([oldFailure], now)).toBe(false);
+    expect(autoRenderSourceHandled([{ ...oldFailure, updatedAt: new Date(now - 5 * 60_000) }], now)).toBe(true);
+  });
+
+  it("does not loop indefinitely on broken or unavailable replays", () => {
+    expect(autoRenderSourceHandled([{ ...oldFailure, errorCode: "REPLAY_UNAVAILABLE" }], now)).toBe(true);
+    expect(autoRenderSourceHandled([oldFailure, oldFailure, oldFailure], now)).toBe(true);
+  });
+
+  it("preserves active, completed, and explicitly cancelled jobs", () => {
+    for (const status of ["queued", "completed", "cancelled"] as const) {
+      expect(autoRenderSourceHandled([oldFailure, { ...oldFailure, status }], now)).toBe(true);
+    }
+    expect(autoRenderSourceHandled([], now)).toBe(false);
   });
 });

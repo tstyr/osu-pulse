@@ -3,6 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 import zipfile
+import asyncio
+import io
+from unittest.mock import patch
+
+import httpx
 from pathlib import Path
 
 from renderer.beatmap_downloader import BeatmapDownloader
@@ -11,6 +16,30 @@ from renderer.errors import ErrorCode, RenderError
 
 
 class BeatmapDownloaderTests(unittest.TestCase):
+    def test_download_reports_the_underlying_filesystem_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = self.settings(Path(temporary))
+            settings.ensure_directories()
+            settings.songs_path.mkdir()
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, "w") as bundle:
+                bundle.writestr("map.osu", "osu file format v14")
+
+            async def exercise() -> None:
+                downloader = BeatmapDownloader(settings)
+                await downloader.close()
+                downloader._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=payload.getvalue())))
+                try:
+                    with patch.object(downloader, "_extract_archive", side_effect=OSError(28, "No space left")):
+                        with self.assertRaises(RenderError) as raised:
+                            await downloader.install(123)
+                    self.assertIn("errno 28", raised.exception.message)
+                    self.assertEqual(list(settings.temp_path.glob("*.osz")), [])
+                finally:
+                    await downloader.close()
+
+            asyncio.run(exercise())
+
     def settings(self, root: Path) -> Settings:
         return Settings(
             host="127.0.0.1",

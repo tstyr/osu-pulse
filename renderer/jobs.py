@@ -80,6 +80,9 @@ class JobManager:
         self._workers: list[asyncio.Task[None]] = []
         self._cleanup_task: asyncio.Task[None] | None = None
         self._youtube_retry_task: asyncio.Task[None] | None = None
+        self._storage_refresh_task: asyncio.Task[None] | None = None
+        self._youtube_retry_wake = asyncio.Event()
+        self._last_storage_available = self.storage_snapshot()["available"]
         self._lock = asyncio.Lock()
         self._beatmap_index_lock = asyncio.Lock()
         self._stats_lock = asyncio.Lock()
@@ -95,6 +98,7 @@ class JobManager:
         await asyncio.to_thread(self.cleanup_orphaned_temp)
         self._workers = [asyncio.create_task(self._worker(index), name=f"render-worker-{index}") for index in range(self.settings.max_concurrent_renders)]
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup(), name="render-output-cleanup")
+        self._storage_refresh_task = asyncio.create_task(self._monitor_storage(), name="render-storage-recovery")
         if self.youtube_uploader and self.youtube_uploader.configured:
             self._youtube_retry_task = asyncio.create_task(self._retry_pending_youtube(), name="youtube-upload-retry")
 
@@ -107,6 +111,8 @@ class JobManager:
             tasks.append(self._cleanup_task)
         if self._youtube_retry_task:
             tasks.append(self._youtube_retry_task)
+        if self._storage_refresh_task:
+            tasks.append(self._storage_refresh_task)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -114,6 +120,7 @@ class JobManager:
         self._prepare_tasks.clear()
         self._cleanup_task = None
         self._youtube_retry_task = None
+        self._storage_refresh_task = None
 
     @property
     def queue_size(self) -> int:
@@ -186,6 +193,8 @@ class JobManager:
         suppress_youtube: bool = False,
         bypass_start_policy: bool = True,
     ) -> RenderJob:
+        if not self.storage_snapshot()["available"]:
+            raise RenderError(ErrorCode.STORAGE_UNAVAILABLE, "Render storage is unavailable; reconnect the configured Songs/output drive", http_status=503)
         signature = f"{source_key}:{options.signature()}"
         async with self._lock:
             user_jobs = [job for job in self.jobs.values() if job.user_id == user_id and job.status not in TERMINAL_STATUSES]
@@ -387,10 +396,15 @@ class JobManager:
         while True:
             async with self._lock:
                 policy = None
+                storage_ready = self.storage_snapshot()["available"]
                 for job_id in tuple(self._queued_ids):
                     job = self.jobs.get(job_id)
                     if not job or job.status != JobStatus.QUEUED or job.cancel_requested.is_set():
                         self._queued_ids.remove(job_id)
+                        continue
+                    if not storage_ready:
+                        if job.message != "Waiting for render storage to reconnect":
+                            job.update(JobStatus.QUEUED, 5, "Waiting for render storage to reconnect")
                         continue
                     if not job.bypass_start_policy:
                         policy = policy or self.render_policy.snapshot()
@@ -473,25 +487,11 @@ class JobManager:
             raise
         except YouTubeUploadError as exc:
             job.youtube_error = str(exc)[:500]
-            if job.metadata and job.output_path and job.output_path.is_file():
-                await self.youtube_archive.record_pending(
-                    job.id,
-                    job.metadata,
-                    job.output_size_bytes or job.output_path.stat().st_size,
-                    job.youtube_error,
-                    cleanup_after_upload=job.input_type == "composition",
-                )
+            await self._retain_youtube_retry(job)
             LOGGER.error("job=%s youtube_upload_failed error=%s", job.id, job.youtube_error)
         except Exception:
             job.youtube_error = "Unexpected YouTube upload failure"
-            if job.metadata and job.output_path and job.output_path.is_file():
-                await self.youtube_archive.record_pending(
-                    job.id,
-                    job.metadata,
-                    job.output_size_bytes or job.output_path.stat().st_size,
-                    job.youtube_error,
-                    cleanup_after_upload=job.input_type == "composition",
-                )
+            await self._retain_youtube_retry(job)
             LOGGER.exception("job=%s youtube_upload_failed unexpected_error", job.id)
         finally:
             for task in (upload, cancelled):
@@ -499,7 +499,24 @@ class JobManager:
                     task.cancel()
             await asyncio.gather(upload, cancelled, return_exceptions=True)
             if job.thumbnail_path:
-                job.thumbnail_path.unlink(missing_ok=True)
+                try:
+                    job.thumbnail_path.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.warning("job=%s thumbnail cleanup deferred because storage is unavailable", job.id)
+
+    async def _retain_youtube_retry(self, job: RenderJob) -> None:
+        if not job.metadata or not job.output_path:
+            return
+        source_size = job.output_size_bytes or 0
+        if not source_size:
+            try:
+                source_size = job.output_path.stat().st_size
+            except OSError:
+                pass
+        try:
+            await self.youtube_archive.record_pending(job.id, job.metadata, source_size, job.youtube_error or "Upload failed", cleanup_after_upload=job.input_type == "composition")
+        except Exception:
+            LOGGER.exception("job=%s could not persist YouTube retry metadata", job.id)
 
     async def publish_completed_job(self, job: RenderJob) -> None:
         """Publish an externally composed completed job through the normal YouTube lifecycle."""
@@ -745,66 +762,122 @@ class JobManager:
             await asyncio.sleep(3600)
             await asyncio.to_thread(self.cleanup_old_outputs)
 
+    async def _monitor_storage(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            try:
+                await self.refresh_storage_dependencies()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Storage reconnection refresh failed")
+
+    async def refresh_storage_dependencies(self) -> None:
+        dependencies = self.runner.dependencies
+        previous_songs = getattr(dependencies, "osu_songs", False)
+        previous_storage = self._last_storage_available
+
+        def probe_paths() -> tuple[bool, bool, bool, bool]:
+            return (
+                self.settings.songs_path.is_dir(),
+                (self.settings.osu_skins_path / self.settings.standard_skin / "skin.ini").is_file(),
+                (self.settings.osu_skins_path / self.settings.mania_skin / "skin.ini").is_file(),
+                self.settings.output_path.is_dir(),
+            )
+
+        songs, standard_skin, mania_skin, output = await asyncio.to_thread(probe_paths)
+        self._last_storage_available = songs and output
+        dependencies.osu_songs = songs
+        dependencies.standard_skin = standard_skin
+        dependencies.mania_skin = mania_skin
+        if not songs:
+            self.beatmaps.index.ready = False
+            dependencies.songs_index_ready = False
+            dependencies.songs_index_count = 0
+            dependencies.songs_index_error = "Songs storage is unavailable"
+            return
+        if not previous_songs or not self.beatmaps.index.ready or not dependencies.songs_index_ready:
+            async with self._beatmap_index_lock:
+                count = await asyncio.to_thread(self.beatmaps.rebuild)
+                dependencies.songs_index_ready = self.beatmaps.index.ready
+                dependencies.songs_index_count = count
+                dependencies.songs_index_error = self.beatmaps.index.last_error
+            LOGGER.info("Songs storage recovered; indexed beatmaps=%s", count)
+            self._queue_changed.set()
+        if self._last_storage_available and not previous_storage:
+            self._queue_changed.set()
+            self._youtube_retry_wake.set()
+
     async def _retry_pending_youtube(self) -> None:
         # Give the API server a moment to finish startup, then recover pending
         # uploads promptly. Waiting a full minute made a successful OAuth
         # refresh appear to have had no effect.
         await asyncio.sleep(10)
         while True:
+            self._youtube_retry_wake.clear()
             try:
-                # Drain a bounded batch in one pass. Previously this requested
-                # only one item and then slept for 15 minutes even when that
-                # item was merely a stale entry with no local video. A few
-                # stale entries could therefore block valid uploads for hours.
-                for job_id, entry in self.youtube_archive.due_pending(limit=10):
-                    output = (self.settings.output_path / f"{job_id}.mp4").resolve()
-                    recorded = await asyncio.to_thread(self.youtube_archive.get, job_id)
-                    if recorded and recorded.get("video_id"):
-                        await self.youtube_archive.remove_pending(job_id)
-                        if output.is_file() and (self.settings.youtube_delete_after_upload or entry.get("cleanup_after_upload") is True):
-                            await self.youtube_archive.cleanup(job_id, output)
-                        LOGGER.info("job=%s already uploaded; removed stale YouTube retry entry", job_id)
-                        continue
-                    if not output.is_relative_to(self.settings.output_path.resolve()) or not output.is_file():
-                        await self.youtube_archive.remove_pending(job_id)
-                        LOGGER.warning("job=%s removed from YouTube retry queue because local video is missing", job_id)
-                        continue
-                    raw_metadata = entry.get("metadata")
-                    if not isinstance(raw_metadata, dict):
-                        await self.youtube_archive.remove_pending(job_id)
-                        continue
-                    fields = ScoreMetadata.__dataclass_fields__
-                    metadata = ScoreMetadata(**{key: value for key, value in raw_metadata.items() if key in fields})
-                    try:
-                        assert self.youtube_uploader
-                        LOGGER.info("job=%s retrying pending YouTube upload attempt=%s", job_id, entry.get("attempts"))
-                        result = await self.youtube_uploader.upload(output, metadata)
-                        source_size = max(1, int(entry.get("source_size") or output.stat().st_size))
-                        await self.youtube_archive.record(job_id, result, metadata, source_size)
-                        playlist_uploader = getattr(self.youtube_uploader, "add_to_playlists", None)
-                        if playlist_uploader:
-                            try:
-                                await playlist_uploader(result.video_id, metadata)
-                            except YouTubeUploadError as exc:
-                                LOGGER.warning("job=%s retry playlist update failed: %s", job_id, exc)
-                        if self.settings.youtube_delete_after_upload or entry.get("cleanup_after_upload") is True:
-                            await self.youtube_archive.cleanup(job_id, output)
-                        LOGGER.info("job=%s pending YouTube upload completed video_id=%s", job_id, result.video_id)
-                    except YouTubeUploadError as exc:
-                        await self.youtube_archive.record_pending(
-                            job_id,
-                            metadata,
-                            output.stat().st_size,
-                            str(exc),
-                            cleanup_after_upload=entry.get("cleanup_after_upload") is True,
-                        )
-                        LOGGER.warning("job=%s pending YouTube retry deferred: %s", job_id, exc)
-                        break
+                await self.retry_pending_youtube_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 LOGGER.exception("Pending YouTube retry worker failed")
-            await asyncio.sleep(15 * 60)
+            try:
+                await asyncio.wait_for(self._youtube_retry_wake.wait(), timeout=15 * 60)
+            except asyncio.TimeoutError:
+                pass
+
+    async def retry_pending_youtube_once(self) -> None:
+        if not self.settings.output_path.is_dir():
+            LOGGER.warning("YouTube retry paused: output storage is unavailable; preserving pending uploads")
+            return
+        attempted = 0
+        for job_id, entry in self.youtube_archive.due_pending(limit=None):
+            output = (self.settings.output_path / f"{job_id}.mp4").resolve()
+            recorded = await asyncio.to_thread(self.youtube_archive.get, job_id)
+            if recorded and recorded.get("video_id"):
+                await self.youtube_archive.remove_pending(job_id)
+                if output.is_file() and (self.settings.youtube_delete_after_upload or entry.get("cleanup_after_upload") is True):
+                    await self.youtube_archive.cleanup(job_id, output)
+                LOGGER.info("job=%s already uploaded; removed stale YouTube retry entry", job_id)
+                continue
+            if not output.is_relative_to(self.settings.output_path.resolve()) or not output.is_file():
+                # A removable drive or a temporarily missing file may come back.
+                # Retain its metadata, and don't let it block existing videos.
+                LOGGER.warning("job=%s YouTube source unavailable; pending entry retained", job_id)
+                continue
+            raw_metadata = entry.get("metadata")
+            if not isinstance(raw_metadata, dict):
+                LOGGER.warning("job=%s invalid YouTube retry metadata; entry retained", job_id)
+                continue
+            fields = ScoreMetadata.__dataclass_fields__
+            metadata = ScoreMetadata(**{key: value for key, value in raw_metadata.items() if key in fields})
+            attempted += 1
+            source_size = max(1, int(entry.get("source_size") or output.stat().st_size))
+            try:
+                assert self.youtube_uploader
+                LOGGER.info("job=%s retrying pending YouTube upload attempt=%s", job_id, entry.get("attempts"))
+                result = await self.youtube_uploader.upload(output, metadata)
+                await self.youtube_archive.record(job_id, result, metadata, source_size)
+                playlist_uploader = getattr(self.youtube_uploader, "add_to_playlists", None)
+                if playlist_uploader:
+                    try:
+                        await playlist_uploader(result.video_id, metadata)
+                    except Exception as exc:
+                        LOGGER.warning("job=%s retry playlist update failed: %s", job_id, exc)
+                if self.settings.youtube_delete_after_upload or entry.get("cleanup_after_upload") is True:
+                    await self.youtube_archive.cleanup(job_id, output)
+                LOGGER.info("job=%s pending YouTube upload completed video_id=%s", job_id, result.video_id)
+            except YouTubeUploadError as exc:
+                await self.youtube_archive.record_pending(job_id, metadata, source_size, str(exc), cleanup_after_upload=entry.get("cleanup_after_upload") is True)
+                LOGGER.warning("job=%s pending YouTube retry deferred: %s", job_id, exc)
+                break
+            if attempted >= 10:
+                break
+
+    def storage_snapshot(self) -> dict[str, bool]:
+        songs = self.settings.songs_path.is_dir()
+        output = self.settings.output_path.is_dir()
+        return {"available": songs and output, "songs_available": songs, "output_available": output}
 
     def metrics_snapshot(self) -> dict[str, object]:
         completed = int(self._lifetime_stats.get("completed", 0))
@@ -845,6 +918,8 @@ class JobManager:
             "video_count": video_count,
             "video_bytes": video_bytes,
             "start_policy": self.render_policy.snapshot().public_dict(),
+            "storage": self.storage_snapshot(),
+            "youtube": self.youtube_archive.diagnostics(),
         }
 
     def _load_lifetime_stats(self) -> dict[str, int]:

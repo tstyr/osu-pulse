@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -43,6 +44,33 @@ def test_settings(root: Path, *, token: str | None = None) -> Settings:
 
 
 class ApiTests(unittest.TestCase):
+    def test_health_stays_available_when_output_drive_disappears(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            mkdir = Path.mkdir
+
+            def mkdir_with_missing_drive(path, *args, **kwargs):
+                if path == settings.output_path:
+                    raise FileNotFoundError("output USB unavailable")
+                return mkdir(path, *args, **kwargs)
+
+            with patch.object(Path, "mkdir", mkdir_with_missing_drive):
+                with TestClient(create_app(settings)) as client:
+                    dependencies = client.app.state.dependencies
+                    for name in ("danser", "mania_renderer", "ffmpeg", "osu_songs", "standard_skin", "mania_skin", "osu_api", "songs_index_ready"):
+                        setattr(dependencies, name, True)
+                    response = client.get("/health")
+                    rejected = client.post("/render", json={"type": "score_url", "url": "https://osu.ppy.sh/scores/123", "user_id": "123"})
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "degraded")
+            self.assertFalse(payload["render_stats"]["storage"]["output_available"])
+            self.assertFalse(payload["system"]["disk_available"])
+            self.assertIn("auth_status", payload["render_stats"]["youtube"])
+            self.assertEqual(rejected.status_code, 503)
+            self.assertEqual(rejected.json()["error_code"], "STORAGE_UNAVAILABLE")
+
     def test_health_starts_degraded_and_invalid_url_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with TestClient(create_app(test_settings(Path(temporary)))) as client:

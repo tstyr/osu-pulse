@@ -43,6 +43,15 @@ export type RendererHealth = {
     cancelled_total: number;
     video_count: number;
     video_bytes: number;
+    storage?: { available: boolean; songs_available: boolean; output_available: boolean };
+    youtube?: {
+      enabled: boolean;
+      configured: boolean;
+      auth_status: "reauthorization_required" | "unchecked" | "not_configured";
+      pending_count: number;
+      last_error: string | null;
+      next_retry_at: string | null;
+    };
   };
 };
 

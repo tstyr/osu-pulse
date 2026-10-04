@@ -84,7 +84,10 @@ class SystemMetricsCollector:
 
     def _collect_base_system(self) -> dict[str, Any]:
         memory = psutil.virtual_memory()
-        disk = psutil.disk_usage(str(self.disk_path))
+        try:
+            disk = psutil.disk_usage(str(self.disk_path))
+        except (OSError, psutil.Error):
+            disk = None
         network = psutil.net_io_counters()
         return {
             "cpu_percent": round(psutil.cpu_percent(interval=None), 1),
@@ -94,9 +97,10 @@ class SystemMetricsCollector:
             "memory_used_bytes": int(memory.used),
             "memory_total_bytes": int(memory.total),
             "memory_percent": round(float(memory.percent), 1),
-            "disk_used_bytes": int(disk.used),
-            "disk_total_bytes": int(disk.total),
-            "disk_percent": round(float(disk.percent), 1),
+            "disk_available": disk is not None,
+            "disk_used_bytes": int(disk.used) if disk else None,
+            "disk_total_bytes": int(disk.total) if disk else None,
+            "disk_percent": round(float(disk.percent), 1) if disk else None,
             "network_received_bytes": int(network.bytes_recv),
             "network_sent_bytes": int(network.bytes_sent),
             "uptime_seconds": max(0, int(time.time() - psutil.boot_time())),

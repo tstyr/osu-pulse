@@ -123,13 +123,15 @@ def create_app(settings: Settings = default_settings) -> FastAPI:
         manager: JobManager = request.app.state.jobs
         dependencies: DependencyState = request.app.state.dependencies
         metrics: SystemMetricsCollector = request.app.state.metrics
+        snapshot = await metrics.snapshot(manager)
+        storage_ready = snapshot.get("render_stats", {}).get("storage", {}).get("available", True)
         return {
-            "status": dependencies.status,
+            "status": dependencies.status if storage_ready else "degraded",
             "busy": manager.active_count > 0,
             "queue_size": manager.queue_size,
             "rendering": manager.active_count,
             **dependencies.public_dict(),
-            **await metrics.snapshot(manager),
+            **snapshot,
         }
 
     @app.post("/render", status_code=202, dependencies=[Depends(authorize)])

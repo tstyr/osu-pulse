@@ -13,6 +13,23 @@ from renderer.youtube_uploader import YouTubeUploadResult
 
 
 class YouTubeArchiveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_diagnostics_expose_reauthorization_without_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = SimpleNamespace(youtube_upload_registry_path=Path(temporary) / "youtube-uploads.json", youtube_refresh_token="private-token", youtube_client_id="private-client", youtube_auto_upload=True)
+            archive = YouTubeArchive(settings)
+            await archive.record_pending("a" * 32, ScoreMetadata(), 100, "YouTube OAuth refresh failed: HTTP 400: invalid_grant")
+
+            diagnostics = archive.diagnostics()
+
+            self.assertEqual(diagnostics["auth_status"], "reauthorization_required")
+            self.assertEqual(diagnostics["pending_count"], 1)
+            self.assertTrue(diagnostics["enabled"])
+            self.assertNotIn("private-token", str(diagnostics))
+            self.assertNotIn("private-client", str(diagnostics))
+            settings.youtube_refresh_token = "new-private-token"
+            self.assertEqual(archive.diagnostics()["auth_status"], "unchecked")
+            self.assertIsNone(archive.diagnostics()["last_error"])
+
     async def test_legacy_naive_retry_timestamp_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             archive = YouTubeArchive(test_settings(Path(temporary)))

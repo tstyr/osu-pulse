@@ -32,6 +32,7 @@ export { parseScoreUrl, RenderApiError } from "./score-url";
 import { RenderApiError } from "./score-url";
 import { isAllowedCompletedVideoUrl } from "./video-url";
 import { renderRequestMetadata, renderRequestSource } from "./request-source";
+import { renderQueueHasCapacity } from "./queue-capacity";
 
 const ACTIVE_STATUSES: CloudRenderStatus[] = CLOUD_RENDER_STATUSES.filter(
   (status) => !TERMINAL_CLOUD_RENDER_STATUSES.has(status),
@@ -164,7 +165,7 @@ export async function createCloudRenderJob(input: {
     .select({ value: count() })
     .from(cloudRenderJobs)
     .where(inArray(cloudRenderJobs.status, ACTIVE_STATUSES));
-  if ((active?.value ?? 0) >= 4) {
+  if (!renderQueueHasCapacity(active?.value ?? 0)) {
     throw new RenderApiError("QUEUE_FULL", "レンダー待機列がいっぱいです。しばらくしてから再試行してください。", 429);
   }
   const duplicate = await db.query.cloudRenderJobs.findFirst({

@@ -48,7 +48,7 @@ class YouTubeArchive:
         pending = payload.get("pending") if isinstance(payload, dict) else None
         return pending if isinstance(pending, dict) else {}
 
-    def due_pending(self, limit: int = 2) -> list[tuple[str, dict[str, Any]]]:
+    def due_pending(self, limit: int | None = 2) -> list[tuple[str, dict[str, Any]]]:
         now = datetime.now(timezone.utc)
         credential_revision = self._credential_revision()
         rows: list[tuple[str, dict[str, Any]]] = []
@@ -71,7 +71,23 @@ class YouTubeArchive:
             if next_attempt <= now or credentials_changed:
                 rows.append((job_id, entry))
         rows.sort(key=lambda item: str(item[1].get("next_attempt_at") or ""))
-        return rows[:max(1, limit)]
+        return rows if limit is None else rows[:max(1, limit)]
+
+    def diagnostics(self) -> dict[str, Any]:
+        rows = [entry for entry in self.pending_entries().values() if isinstance(entry, dict)]
+        revision = self._credential_revision()
+        current_failures = [entry for entry in rows if not entry.get("credential_revision") or entry.get("credential_revision") == revision]
+        newest = max(current_failures, key=lambda entry: str(entry.get("last_attempt_at") or ""), default={})
+        revoked = any("invalid_grant" in str(entry.get("last_error", "")).lower() for entry in current_failures)
+        configured = bool(getattr(self.settings, "youtube_client_id", None) and getattr(self.settings, "youtube_refresh_token", None))
+        return {
+            "enabled": bool(getattr(self.settings, "youtube_auto_upload", False)),
+            "configured": configured,
+            "auth_status": "reauthorization_required" if revoked else "unchecked" if configured else "not_configured",
+            "pending_count": len(rows),
+            "last_error": str(newest.get("last_error") or "")[:500] or None,
+            "next_retry_at": min((str(entry["next_attempt_at"]) for entry in rows if entry.get("next_attempt_at")), default=None),
+        }
 
     async def record_pending(
         self,

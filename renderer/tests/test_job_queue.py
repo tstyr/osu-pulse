@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from renderer.beatmap_index import BeatmapIndex
 from renderer.beatmap_resolver import BeatmapResolver
@@ -90,6 +90,201 @@ class FakeDownloader:
 
 
 class JobQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_render_waits_for_usb_reconnection_instead_of_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = test_settings(root)
+            settings.ensure_directories()
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            manager = JobManager(settings, FakeOsuApi(), BeatmapResolver(index), FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            queued = RenderJob("queued", "user", "replay", "source", RenderOptions(), status=JobStatus.QUEUED)
+            manager.jobs[queued.id] = queued
+            manager._queued_ids.append(queued.id)
+            settings.output_path.rmdir()
+            await manager.refresh_storage_dependencies()
+            selection = asyncio.create_task(manager._next_render_job())
+            await asyncio.sleep(0)
+            self.assertFalse(selection.done())
+            self.assertEqual(queued.status, JobStatus.QUEUED)
+            self.assertEqual(manager._queued_ids, [queued.id])
+
+            settings.output_path.mkdir()
+            await manager.refresh_storage_dependencies()
+
+            self.assertIs(await asyncio.wait_for(selection, timeout=0.5), queued)
+
+    async def test_usb_reconnect_wakes_youtube_retry_without_waiting_fifteen_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = test_settings(root)
+            settings.ensure_directories()
+            settings.output_path.rmdir()
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            manager = JobManager(settings, FakeOsuApi(), BeatmapResolver(index), FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            first, second = asyncio.Event(), asyncio.Event()
+            calls = 0
+
+            async def observe_pass():
+                nonlocal calls
+                calls += 1
+                (first if calls == 1 else second).set()
+
+            manager.retry_pending_youtube_once = observe_pass
+            with patch("renderer.jobs.asyncio.sleep", new=AsyncMock()):
+                retry = asyncio.create_task(manager._retry_pending_youtube())
+                try:
+                    await asyncio.wait_for(first.wait(), timeout=0.5)
+                    settings.output_path.mkdir()
+                    await manager.refresh_storage_dependencies()
+                    await asyncio.wait_for(second.wait(), timeout=0.5)
+                finally:
+                    retry.cancel()
+                    await asyncio.gather(retry, return_exceptions=True)
+            self.assertEqual(calls, 2)
+
+    async def test_storage_reconnect_recovers_startup_missing_index_and_skins(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = replace(test_settings(root), osu_skins_path=root / "Skins")
+            settings.ensure_directories()
+            offline = root / "unmounted-songs"
+            settings.songs_path.rename(offline)
+            map_content = b"osu file format v14\n[Metadata]\nBeatmapID:123\n"
+            (offline / "map.osu").write_bytes(map_content)
+            for skin in (settings.standard_skin, settings.mania_skin):
+                directory = settings.osu_skins_path / skin
+                directory.mkdir(parents=True)
+                (directory / "skin.ini").write_text("[General]\n", encoding="utf-8")
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            runner = FakeRunner(settings.output_path)
+            manager = JobManager(settings, FakeOsuApi(), BeatmapResolver(index), runner)  # type: ignore[arg-type]
+            queued = RenderJob("queued", "user", "replay", "source", RenderOptions(), status=JobStatus.QUEUED)
+            manager.jobs[queued.id] = queued
+            manager._queued_ids.append(queued.id)
+
+            await manager.refresh_storage_dependencies()
+            self.assertFalse(runner.dependencies.songs_index_ready)
+            offline.rename(settings.songs_path)
+            await manager.refresh_storage_dependencies()
+
+            self.assertTrue(runner.dependencies.osu_songs)
+            self.assertTrue(runner.dependencies.standard_skin)
+            self.assertTrue(runner.dependencies.mania_skin)
+            self.assertTrue(runner.dependencies.songs_index_ready)
+            self.assertEqual(runner.dependencies.songs_index_count, 1)
+            self.assertIsNotNone(index.resolve(beatmap_id=123))
+            self.assertIs(manager.jobs[queued.id], queued)
+            self.assertEqual(queued.status, JobStatus.QUEUED)
+            self.assertTrue(manager._queue_changed.is_set())
+
+    async def test_storage_disconnect_refresh_does_not_discard_running_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = test_settings(root)
+            settings.ensure_directories()
+            (settings.songs_path / "map.osu").write_bytes(b"osu file format v14\n[Metadata]\nBeatmapID:456\n")
+            index = BeatmapIndex(settings.songs_path, settings.beatmap_index_path)
+            index.rebuild()
+            runner = FakeRunner(settings.output_path)
+            manager = JobManager(settings, FakeOsuApi(), BeatmapResolver(index), runner)  # type: ignore[arg-type]
+            running = RenderJob("running", "user", "replay", "source", RenderOptions(), status=JobStatus.RENDERING)
+            manager.jobs[running.id] = running
+            await manager.refresh_storage_dependencies()
+            settings.songs_path.rename(root / "unmounted-songs")
+
+            await manager.refresh_storage_dependencies()
+
+            self.assertFalse(runner.dependencies.osu_songs)
+            self.assertFalse(runner.dependencies.songs_index_ready)
+            self.assertEqual(runner.dependencies.songs_index_count, 0)
+            self.assertEqual(running.status, JobStatus.RENDERING)
+            self.assertFalse(running.cancel_requested.is_set())
+            self.assertIs(manager.jobs[running.id], running)
+
+    async def test_upload_failure_retains_metadata_if_usb_disappears_during_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+
+            class DisconnectedUpload:
+                configured = True
+
+                async def upload(self, video, metadata, progress):
+                    video.unlink()
+                    video.parent.rmdir()
+                    raise YouTubeUploadError("YouTube upload connection failed")
+
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path), youtube_uploader=DisconnectedUpload())  # type: ignore[arg-type]
+            job = RenderJob("f" * 32, "user", "replay", "source", RenderOptions(), metadata=ScoreMetadata(score_id=123), output_size_bytes=5)
+            job.output_path = settings.output_path / f"{job.id}.mp4"
+            job.output_path.write_bytes(b"video")
+
+            await manager._upload_youtube(job)
+
+            pending = manager.youtube_archive.pending_entries()[job.id]
+            self.assertEqual(pending["source_size"], 5)
+            self.assertEqual(pending["metadata"]["score_id"], 123)
+            self.assertEqual(job.youtube_error, "YouTube upload connection failed")
+
+    async def test_usb_outage_does_not_discard_pending_youtube_uploads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            uploader = FakeYouTubeUploader()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path), youtube_uploader=uploader)  # type: ignore[arg-type]
+            job_id = "e" * 32
+            await manager.youtube_archive.record_pending(job_id, ScoreMetadata(title="Unposted"), 50, "connection failed")
+            pending = manager.youtube_archive.pending_entries()
+            pending[job_id]["next_attempt_at"] = "2020-01-01T00:00:00+00:00"
+            manager.youtube_archive._write_pending(pending)
+            settings.output_path.rmdir()
+
+            await manager.retry_pending_youtube_once()
+
+            self.assertEqual(manager.youtube_archive.pending_entries(), pending)
+            self.assertEqual(uploader.uploaded, [])
+
+    async def test_missing_pending_sources_are_retained_without_blocking_existing_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+
+            class RecoveryUploader(FakeYouTubeUploader):
+                async def upload(self, video, metadata, progress=None):
+                    self.uploaded.append(video)
+                    return YouTubeUploadResult("abc123XYZ", "https://youtu.be/abc123XYZ", "Recovered", "unlisted")
+
+            uploader = RecoveryUploader()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path), youtube_uploader=uploader)  # type: ignore[arg-type]
+            ids = [f"{index:032x}" for index in range(12)]
+            pending = {job_id: {"metadata": ScoreMetadata().public_dict(), "source_size": 5, "next_attempt_at": "2020-01-01T00:00:00+00:00"} for job_id in ids}
+            manager.youtube_archive._write_pending(pending)
+            output = settings.output_path / f"{ids[-1]}.mp4"
+            output.write_bytes(b"video")
+
+            await manager.retry_pending_youtube_once()
+
+            self.assertEqual(uploader.uploaded, [output])
+            self.assertEqual(set(manager.youtube_archive.pending_entries()), set(ids[:-1]))
+            self.assertEqual(manager.youtube_archive.get(ids[-1])["video_id"], "abc123XYZ")
+
+    async def test_new_render_rejects_unavailable_storage_before_creating_a_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = test_settings(Path(temporary))
+            settings.ensure_directories()
+            manager = JobManager(settings, FakeOsuApi(), None, FakeRunner(settings.output_path))  # type: ignore[arg-type]
+            settings.output_path.rmdir()
+
+            with self.assertRaises(RenderError) as raised:
+                await manager.submit_score("user", "https://osu.ppy.sh/scores/123", RenderOptions())
+
+            self.assertEqual(raised.exception.code.value, "STORAGE_UNAVAILABLE")
+            self.assertEqual(raised.exception.http_status, 503)
+            self.assertEqual(manager.jobs, {})
+
     async def test_status_polls_cache_disk_totals_but_keep_progress_current(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             settings = test_settings(Path(temporary))
