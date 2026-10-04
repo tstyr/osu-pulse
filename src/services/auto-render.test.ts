@@ -4,7 +4,7 @@ import {
   autoRenderSettingsSchema,
   defaultAutoRenderSettings,
 } from "../lib/control/auto-render-settings";
-import { autoRenderSourceHandled, matchesAutoRenderScore, prioritizeAutoRenderScores } from "./auto-render";
+import { autoRenderOptionsForMode, autoRenderSourceHandled, matchesAutoRenderScore, prioritizeAutoRenderScores } from "./auto-render";
 
 const score = {
   osuScoreId: "7369136249",
@@ -49,6 +49,37 @@ describe("auto render conditions", () => {
     ];
     const prioritized = prioritizeAutoRenderScores(scores, new Set(["1"]));
     expect(prioritized.map((item) => item.osuScoreId)).toEqual(["2", "3"]);
+  });
+});
+
+describe("automatic render ruleset options", () => {
+  const settings = {
+    ...defaultAutoRenderSettings(),
+    resolution: "2560x1440" as const,
+    fps: 120 as const,
+    speed: "2.0" as const,
+    motionBlur: true,
+  };
+
+  it("normalizes unsupported mania effects while preserving resolution and fps", () => {
+    expect(autoRenderOptionsForMode(settings, "mania")).toEqual({
+      resolution: "2560x1440",
+      fps: 120,
+      speed: "original",
+      motionBlur: false,
+    });
+  });
+
+  it("retains std speed and motion blur settings, including after a mania job", () => {
+    autoRenderOptionsForMode(settings, "mania");
+    expect(autoRenderOptionsForMode(settings, "osu")).toEqual({
+      resolution: "2560x1440",
+      fps: 120,
+      speed: "2.0",
+      motionBlur: true,
+    });
+    expect(settings.speed).toBe("2.0");
+    expect(settings.motionBlur).toBe(true);
   });
 });
 

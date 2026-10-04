@@ -10,6 +10,7 @@ import {
   discordAccountLinks,
   renderVideos,
   scoreEvents,
+  type CloudRenderOptions,
   type ScoreEvent,
 } from "../db/schema";
 import {
@@ -52,6 +53,20 @@ export function matchesAutoRenderScore(
   if (!settings.ranks.includes(score.rank as AutoRenderSettings["ranks"][number])) return false;
   if (settings.minimumPp > 0 && (score.pp == null || score.pp < settings.minimumPp)) return false;
   return score.accuracy * 100 >= settings.minimumAccuracy;
+}
+
+export function autoRenderOptionsForMode(
+  settings: Pick<AutoRenderSettings, "resolution" | "fps" | "speed" | "motionBlur">,
+  mode: ScoreEvent["mode"],
+): CloudRenderOptions {
+  // The mania engine does not support speed overrides or motion blur. Keep
+  // shared quality settings, without mutating the user's std configuration.
+  return {
+    resolution: settings.resolution,
+    fps: settings.fps,
+    speed: mode === "mania" ? "original" : settings.speed,
+    motionBlur: mode === "mania" ? false : settings.motionBlur,
+  };
 }
 
 export function prioritizeAutoRenderScores<
@@ -192,12 +207,7 @@ export async function enqueueEligibleAutoRenders() {
       inputType: "score_url",
       sourceHash: hash,
       scoreUrl: scoreUrl(score.osuScoreId),
-      options: {
-        resolution: settings.resolution,
-        fps: settings.fps,
-        speed: settings.speed,
-        motionBlur: settings.motionBlur,
-      },
+      options: autoRenderOptionsForMode(settings, score.mode),
       message: `自動レンダー待機中（判定 ${score.rank}）`,
       metadata: {
         request_source: "automatic",
