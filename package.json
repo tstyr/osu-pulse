@@ -15,6 +15,7 @@
     "db:configure-local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-local-postgres.ps1",
     "db:import-neon-delta": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-neon-delta.ps1",
     "db:check": "dotenv -e .env.local -- tsx scripts/check-database.ts",
+    "db:check-bot-statistics": "dotenv -e .env.local -- tsx scripts/check-bot-statistics.ts",
     "db:backfill-play-time": "dotenv -e .env.local -- tsx scripts/backfill-play-time.ts",
     "db:backfill-beatmap-length": "dotenv -e .env.local -- tsx scripts/backfill-beatmap-length.ts",
     "db:migrate:legacy-supabase": "dotenv -e .env.local -- tsx scripts/migrate-legacy-supabase.ts",

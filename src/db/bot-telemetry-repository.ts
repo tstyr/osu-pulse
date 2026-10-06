@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 
 import { databaseResultRows, getDb } from "./index";
 import { botTelemetrySamples } from "./schema";
@@ -193,34 +193,40 @@ export async function getBotStatisticsExtent(scope: string): Promise<BotStatisti
 
 export type BotTelemetryAggregate = { summary: BotStatisticsData["summary"]; points: BotStatisticsData["points"]; sampleCount: number; observedSeconds: number };
 
-/** All raw samples remain in PostgreSQL; only bounded rollups leave the DB. */
-export async function getBotTelemetryAggregate(scope: string, from: Date, to: Date, bucketSeconds: number): Promise<BotTelemetryAggregate> {
+/** Trusted relation override lets read-only verification run the real SQL over VALUES fixtures. */
+export function botTelemetryAggregateQuery(scope: string, from: Date, to: Date, bucketSeconds: number, relation: SQL = sql`bot_telemetry_samples`) {
   botStatisticsGuildId(scope);
   const definitions = sql.join(Object.entries(BOT_STATISTIC_METRICS).map(([key, definition]) => sql`(${key}::text, ${definition.kind}::text)`), sql`, `);
   const fromValue = from.toISOString();
   const toValue = to.toISOString();
   const stride = sql`${bucketSeconds} * interval '1 second'`;
-  const [row] = databaseResultRows<{ summary: BotStatisticsData["summary"]; points: BotStatisticsData["points"]; sample_count: number | string; observed_seconds: number | string }>(await getDb().execute(sql`
+  return sql`
     with definitions(metric, kind) as (values ${definitions}), samples as materialized (
-      select id, sampled_at, metrics, greatest(0, least(interval_seconds,
+      select id, sampled_at, metrics, interval_seconds, greatest(0, least(interval_seconds,
         extract(epoch from sampled_at - ${fromValue}::timestamptz)))::double precision as weight,
         greatest(${fromValue}::timestamptz, sampled_at - interval_seconds * interval '1 second') as observed_from
-      from bot_telemetry_samples where scope = ${scope} and sampled_at >= ${fromValue}::timestamptz and sampled_at <= ${toValue}::timestamptz
+      from ${relation} where scope = ${scope} and sampled_at >= ${fromValue}::timestamptz and sampled_at <= ${toValue}::timestamptz
     ), valued as materialized (
       select s.id, s.sampled_at, s.weight, d.metric, d.kind,
-        case when jsonb_typeof(e.value) = 'number' then e.value::text::double precision end as value
+        case when jsonb_typeof(e.value) = 'number' then e.value::text::double precision end as value,
+        case when jsonb_typeof(e.value) = 'number' then e.value::text::double precision
+          * case when d.kind = 'delta' then s.weight / nullif(s.interval_seconds, 0) else 1 end end as period_value
       from samples s cross join lateral jsonb_each(s.metrics) e join definitions d on d.metric = e.key
     ), latest as (
-      select distinct on (metric) metric, value from valued order by metric, sampled_at desc, id desc
+      -- Read every metric from the latest sample, not its last successful value.
+      -- An omitted or unknown metric must not revive an older measurement.
+      select d.metric, case when jsonb_typeof(s.metrics->d.metric) = 'number'
+        then (s.metrics->>d.metric)::double precision end as value
+      from definitions d cross join (select metrics from samples order by sampled_at desc, id desc limit 1) s
     ), summaries as (
       select metric, min(value) as minimum, max(value) as maximum,
-        case when kind = 'delta' then sum(value) end as total,
-        case when kind = 'delta' then sum(value) / nullif(count(distinct (sampled_at at time zone 'Asia/Tokyo')::date) filter (where value is not null), 0)
+        case when kind = 'delta' then sum(period_value) end as total,
+        case when kind = 'delta' then sum(period_value) / nullif(count(distinct (sampled_at at time zone 'Asia/Tokyo')::date) filter (where period_value is not null and weight > 0), 0)
           else sum(value * weight) / nullif(sum(weight) filter (where value is not null), 0) end as average
       from valued group by metric, kind
     ), buckets as (
       select date_bin(${stride}, sampled_at, ${fromValue}::timestamptz) as bucket, metric,
-        case when kind = 'delta' then sum(value) else sum(value * weight) / nullif(sum(weight) filter (where value is not null), 0) end as value
+        case when kind = 'delta' then sum(period_value) else sum(value * weight) / nullif(sum(weight) filter (where value is not null), 0) end as value
       from valued group by bucket, metric, kind
     ), timeline as (
       select at, jsonb_object_agg(d.metric, b.value) as values
@@ -234,7 +240,12 @@ export async function getBotTelemetryAggregate(scope: string, from: Date, to: Da
       (select coalesce(jsonb_agg(jsonb_build_object('at', at, 'values', values) order by at), '[]'::jsonb) from timeline) as points,
       (select count(*) from samples) as sample_count,
       (select coalesce(sum(extract(epoch from upper(span) - lower(span))), 0) from observed cross join lateral unnest(spans) span) as observed_seconds
-  `));
+  `;
+}
+
+/** All raw samples remain in PostgreSQL; only bounded rollups leave the DB. */
+export async function getBotTelemetryAggregate(scope: string, from: Date, to: Date, bucketSeconds: number): Promise<BotTelemetryAggregate> {
+  const [row] = databaseResultRows<{ summary: BotStatisticsData["summary"]; points: BotStatisticsData["points"]; sample_count: number | string; observed_seconds: number | string }>(await getDb().execute(botTelemetryAggregateQuery(scope, from, to, bucketSeconds)));
   return { summary: row?.summary ?? {}, points: row?.points ?? [], sampleCount: Number(row?.sample_count ?? 0), observedSeconds: Number(row?.observed_seconds ?? 0) };
 }
 
@@ -290,9 +301,9 @@ export async function getBotHistoricalAggregate(scope: string, from: Date, to: D
       'averageVoiceMemberSeconds', voice_seconds / nullif((select count(distinct (sampled_at at time zone 'Asia/Tokyo')::date) from voice), 0)::double precision) order by hour) from hours) as "activityHours",
       (select coalesce(jsonb_agg(jsonb_build_object('mode', mode, 'scores', scores, 'activePlayers', players, 'uniqueBeatmaps', maps, 'playTimeSeconds', seconds) order by mode), '[]'::jsonb) from modes) as "modeBreakdown",
       (select coalesce(jsonb_agg(jsonb_build_object('at', bucket, 'messages', messages, 'plays', plays, 'uniqueBeatmaps', maps, 'activePlayers', players, 'playTimeSeconds', seconds) order by bucket), '[]'::jsonb) from history) as historical,
-      jsonb_build_object('messages', (select coalesce(sum(message_count), 0) from discord), 'plays', (select count(*) from scores),
+      jsonb_build_object('messages', (select sum(message_count) from discord), 'plays', (select count(*) from scores),
         'uniqueBeatmaps', (select count(distinct beatmap_id) from scores), 'activePlayers', (select count(distinct account_id) from scores),
         'playTimeSeconds', (select coalesce(sum(seconds), 0) from scores), 'days', (select count(*) from dates)) as "historicalTotals"
   `));
-  return row ?? { activityHours: [], modeBreakdown: [], historical: [], historicalTotals: { messages: 0, plays: 0, uniqueBeatmaps: 0, activePlayers: 0, playTimeSeconds: 0, days: 0 } };
+  return row ?? { activityHours: [], modeBreakdown: [], historical: [], historicalTotals: { messages: null, plays: 0, uniqueBeatmaps: 0, activePlayers: 0, playTimeSeconds: 0, days: 0 } };
 }

@@ -77,6 +77,6 @@ export type BotStatisticsData = {
   activityHours: Array<{ hour: number; messages: number | null; plays: number; voiceMemberSeconds: number | null; days: number; averageMessages: number | null; averagePlays: number; averageVoiceMemberSeconds: number | null }>;
   modeBreakdown: Array<{ mode: string; scores: number; activePlayers: number; uniqueBeatmaps: number; playTimeSeconds: number }>;
   historical: Array<{ at: string; messages: number | null; plays: number; uniqueBeatmaps: number; activePlayers: number; playTimeSeconds: number }>;
-  historicalTotals: { messages: number; plays: number; uniqueBeatmaps: number; activePlayers: number; playTimeSeconds: number; days: number };
+  historicalTotals: { messages: number | null; plays: number; uniqueBeatmaps: number; activePlayers: number; playTimeSeconds: number; days: number };
   notes: string[];
 };

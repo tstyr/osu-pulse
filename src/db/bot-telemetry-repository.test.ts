@@ -67,6 +67,11 @@ describe("Bot telemetry SQL aggregation", () => {
     expect(query).toContain("range_agg");
     expect(query).toContain("count(distinct (sampled_at at time zone 'Asia/Tokyo')::date)");
     expect(query.match(/latest as \([\s\S]*?\), summaries/)?.[0]).not.toContain("where value is not null");
+    expect(query).toContain("s.weight / nullif(s.interval_seconds, 0)");
+    expect(query).toContain("sum(period_value)");
+    const latest = query.match(/latest as \([\s\S]*?\), summaries/)?.[0];
+    expect(latest).toContain("select metrics from samples order by sampled_at desc, id desc limit 1");
+    expect(latest).not.toContain("distinct on (metric)");
   });
 
   it("keeps historical missing messages and VC observations nullable", async () => {
@@ -80,6 +85,7 @@ describe("Bot telemetry SQL aggregation", () => {
     expect(query).toContain("score_hours as");
     expect(query).not.toContain("coalesce(d.messages, 0)");
     expect(query).toContain("'averageMessages'");
+    expect(query).not.toContain("coalesce(sum(message_count), 0)");
   });
 
   it("enumerates labels with indexed per-scope lookups and preserves removed guild history", async () => {

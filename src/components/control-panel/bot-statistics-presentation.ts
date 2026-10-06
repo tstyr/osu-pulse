@@ -25,14 +25,48 @@ export function formatBotDate(value: string | null, compact = false) {
   }).format(new Date(value));
 }
 
-export function formatBotAxisDate(value: string, range: BotStatisticsRange) {
+export function formatBotAxisDate(value: string, range: BotStatisticsRange, includeTime = range === "today") {
   if (!Number.isFinite(Date.parse(value))) return "未収集";
   return new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo",
-    ...(range === "today"
-      ? { hour: "2-digit" as const, minute: "2-digit" as const }
-      : { month: "2-digit" as const, day: "2-digit" as const, ...(range === "all" ? { year: "2-digit" as const } : {}) }),
+    ...(range === "today" ? {} : { month: "2-digit" as const, day: "2-digit" as const, ...(range === "all" ? { year: "2-digit" as const } : {}) }),
+    ...(includeTime ? { hour: "2-digit" as const, minute: "2-digit" as const } : {}),
   }).format(new Date(value));
+}
+
+export function formatBotAxisValue(keys: readonly BotMetricKey[], value: number) {
+  if (!Number.isFinite(value)) return "—";
+  const units = new Set(keys.map((key) => BOT_STATISTIC_METRICS[key].unit));
+  if (keys.length && units.size === 1 && BOT_STATISTIC_METRICS[keys[0]].unit !== "count") {
+    return formatBotValue(keys[0], value);
+  }
+  // Count and people series can share a numerical axis, but an axis with mixed
+  // units must not silently be labelled as the first series' unit.
+  return value.toLocaleString("ja-JP", { notation: "compact", maximumFractionDigits: 1 });
+}
+
+export function botStatisticsScopeLabel(scopes: BotStatisticsData["scopes"] | undefined, scope: string) {
+  return scopes?.find((item) => item.id === scope)?.label
+    ?? (scope === "global" ? "Bot全体（全サーバー）" : `サーバー ${scope.replace(/^guild:/, "")}`);
+}
+
+const globalOnlyMetrics = new Set<BotMetricKey>([
+  "receivedBytes", "sentBytes", "externalReceivedBytes", "externalSentBytes", "localReceivedBytes", "localSentBytes", "receiveBps", "sendBps",
+  "discordApiPingMs", "dbPingMs", "cpuPercent", "memoryBytes", "eventLoopLagMs",
+  "dbBytes", "dbRows", "diskUsedBytes", "diskTotalBytes", "videoBytes", "audioBytes", "renderQueue", "activeRenders",
+]);
+
+export function botMetricIsGlobalOnly(key: BotMetricKey) {
+  return globalOnlyMetrics.has(key);
+}
+
+export function botTabNavigationIndex(current: number, key: string, count: number) {
+  if (!Number.isInteger(count) || count < 1) return null;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowRight") return (current + 1) % count;
+  if (key === "ArrowLeft") return (current + count - 1) % count;
+  return null;
 }
 
 export function matchingBotStatistics(data: BotStatisticsData | undefined, range: BotStatisticsRange, scope: string) {

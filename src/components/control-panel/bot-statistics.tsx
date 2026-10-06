@@ -7,7 +7,7 @@ import { Bar, BarChart, Brush, CartesianGrid, Line, LineChart, ResponsiveContain
 import { BOT_STATISTIC_METRICS, type BotMetricKey, type BotStatisticsData, type BotStatisticsRange } from "@/lib/bot-statistics";
 import { liveRequestOptions, requestJson } from "@/lib/client/request-json";
 import { RefreshNotice } from "./refresh-notice";
-import { botSeriesOpacity, formatBotAxisDate, formatBotDate, formatBotValue, matchingBotStatistics } from "./bot-statistics-presentation";
+import { botMetricIsGlobalOnly, botSeriesOpacity, botStatisticsScopeLabel, botTabNavigationIndex, formatBotAxisDate, formatBotAxisValue, formatBotDate, formatBotValue, matchingBotStatistics } from "./bot-statistics-presentation";
 
 const ranges: Array<{ id: BotStatisticsRange; label: string }> = [
   { id: "today", label: "今日" }, { id: "week", label: "7日" }, { id: "month", label: "30日" }, { id: "all", label: "全期間" },
@@ -23,14 +23,13 @@ const colors = ["#0051c3", "#ee7b16", "#16976c", "#9254cc", "#db426d", "#178aa6"
 const metricSeries = (keys: BotMetricKey[]): Series[] => keys.map((key, index) => ({
   key, label: BOT_STATISTIC_METRICS[key].label, color: colors[index % colors.length], metric: key,
 }));
-const numberLabel = (value: number) => value.toLocaleString("ja-JP", { notation: "compact", maximumFractionDigits: 1 });
 const metricKeys = Object.keys(BOT_STATISTIC_METRICS) as BotMetricKey[];
 const groupLabels: Record<string, string> = {
   network: "通信", latency: "応答時間", community: "Discord人数", activity: "Discord利用", osu: "osu!", resources: "Bot処理", storage: "保存容量", operations: "キュー",
 };
 
-function StatisticsChart({ title, description, data, series, bar = false }: {
-  title: string; description: string; data: ChartPoint[]; series: Series[]; bar?: boolean;
+function StatisticsChart({ title, description, data, series, bar = false, emptyDescription }: {
+  title: string; description: string; data: ChartPoint[]; series: Series[]; bar?: boolean; emptyDescription?: string;
 }) {
   const [focused, setFocused] = useState<string | null>(null);
   const [zoom, setZoom] = useState<{ from: string; to: string } | null>(null);
@@ -38,11 +37,13 @@ function StatisticsChart({ title, description, data, series, bar = false }: {
   const startIndex = zoom ? Math.max(0, data.findIndex((point) => point.at >= zoom.from)) : 0;
   const lastInZoom = zoom ? data.findLastIndex((point) => point.at <= zoom.to) : data.length - 1;
   const endIndex = Math.max(startIndex, lastInZoom);
+  const leftMetrics = series.filter((item) => item.axis !== "right").map((item) => item.metric);
+  const rightMetrics = series.filter((item) => item.axis === "right").map((item) => item.metric);
   const chartChildren = <>
     <CartesianGrid stroke="#e7ebef" strokeDasharray="3 3" vertical={false} />
     <XAxis dataKey="label" minTickGap={52} tick={{ fontSize: 10, fill: "#778296" }} />
-    <YAxis yAxisId="left" width={64} tick={{ fontSize: 10 }} tickFormatter={numberLabel} />
-    {series.some((item) => item.axis === "right") ? <YAxis yAxisId="right" orientation="right" width={64} tick={{ fontSize: 10 }} tickFormatter={numberLabel} /> : null}
+    <YAxis yAxisId="left" width={82} tick={{ fontSize: 10 }} tickFormatter={(value) => formatBotAxisValue(leftMetrics, Number(value))} />
+    {rightMetrics.length ? <YAxis yAxisId="right" orientation="right" width={82} tick={{ fontSize: 10 }} tickFormatter={(value) => formatBotAxisValue(rightMetrics, Number(value))} /> : null}
     <Tooltip labelFormatter={(label, payload) => {
       const at = payload[0]?.payload?.at;
       return `${typeof at === "string" && /^\d{4}-\d{2}-\d{2}/.test(at) ? formatBotDate(at) : String(label)} · JST`;
@@ -77,8 +78,8 @@ function StatisticsChart({ title, description, data, series, bar = false }: {
       </div>
     </div>
     {hasValues ? <div className="h-80 px-2 pb-2 pt-5 sm:px-4"><ResponsiveContainer width="100%" height="100%">
-      {bar ? <BarChart data={data} margin={{ left: 0, right: 6 }}>{chartChildren}</BarChart> : <LineChart data={data} margin={{ left: 0, right: 6 }}>{chartChildren}</LineChart>}
-    </ResponsiveContainer></div> : <div className="flex h-52 items-center justify-center px-5 text-sm text-[#7b8492]">この期間・範囲の記録はまだありません。</div>}
+      {bar ? <BarChart data={data} margin={{ left: 0, right: 6 }} accessibilityLayer>{chartChildren}</BarChart> : <LineChart data={data} margin={{ left: 0, right: 6 }} accessibilityLayer>{chartChildren}</LineChart>}
+    </ResponsiveContainer></div> : <div className="flex h-52 items-center justify-center px-5 text-center text-sm leading-6 text-[#7b8492]">{emptyDescription ?? "この期間・範囲の記録はまだありません。"}</div>}
   </section>;
 }
 
@@ -101,7 +102,7 @@ export function BotStatistics() {
     ...liveRequestOptions, refreshInterval: 30_000, revalidateOnFocus: false, revalidateOnReconnect: true, dedupingInterval: 10_000,
   });
   const data = matchingBotStatistics(query.data, range, scope);
-  const points = useMemo<ChartPoint[]>(() => data?.points.map((point) => ({ at: point.at, label: formatBotAxisDate(point.at, range), ...point.values })) ?? [], [data, range]);
+  const points = useMemo<ChartPoint[]>(() => data?.points.map((point) => ({ at: point.at, label: formatBotAxisDate(point.at, range, data.bucketSeconds < 86_400), ...point.values })) ?? [], [data, range]);
   const historical = useMemo<ChartPoint[]>(() => data?.historical.map((point) => ({ ...point, label: formatBotAxisDate(point.at, range === "today" ? "week" : range) })) ?? [], [data, range]);
   const hourly = useMemo<ChartPoint[]>(() => data?.activityHours.map((point) => ({
     ...point, at: String(point.hour).padStart(2, "0"), label: `${point.hour}時`,
@@ -111,7 +112,9 @@ export function BotStatistics() {
   })) ?? [], [data, hourView]);
   const refresh = () => { void query.mutate().catch(() => undefined); };
   const summary = data?.summary;
-  const scopeLabel = query.data?.scopes.find((item) => item.id === scope)?.label ?? "全サーバー";
+  const scopeLabel = botStatisticsScopeLabel(query.data?.scopes, scope);
+  const globalOnlyDescription = scope === "global" ? undefined : "この指標はサーバー別に計測しません。「Bot全体（全サーバー）」を選ぶと確認できます。";
+  const visibleMetricKeys = scope === "global" ? metricKeys : metricKeys.filter((key) => !botMetricIsGlobalOnly(key));
   const historyBucketDays = Math.max(1, (data?.bucketSeconds ?? 86_400) / 86_400);
   const historyInterval = historyBucketDays === 1 ? "1日" : `${historyBucketDays.toLocaleString("ja-JP")}日`;
 
@@ -128,7 +131,7 @@ export function BotStatistics() {
         </select>
         <label className="sr-only" htmlFor="bot-statistics-scope">対象サーバー</label>
         <select id="bot-statistics-scope" value={scope} onChange={(event) => setScope(event.target.value)} className="cp-select !mt-0 max-w-56 !w-48">
-          <option value="global">全サーバー</option>{query.data?.scopes.filter((item) => item.id !== "global").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          <option value="global">Bot全体（全サーバー）</option>{query.data?.scopes.filter((item) => item.id !== "global").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
         <button type="button" disabled={query.isValidating} onClick={refresh} className="inline-flex h-9 items-center gap-2 rounded-md border bg-white px-3 text-xs disabled:opacity-50"><RefreshCw className={`size-3.5 ${query.isValidating ? "animate-spin" : ""}`} />更新</button>
       </div>
@@ -142,40 +145,65 @@ export function BotStatistics() {
         <span>収集開始 {formatBotDate(data.collectionStartedAt)} JST</span>
       </div>
       {(data.stale || !data.lastSampleAt) ? <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900" role="status">{data.lastSampleAt ? "Botの接続・収集状態を確認してください。以下は最後に保存された値で、現在値とは限りません。" : "Bot統計の実測記録はまだありません。過去の通信・Ping・VC値は補完せず、収集開始後から記録します。保存済みosu!リザルトは下の履歴で確認できます。"}</p> : null}
+      {scope !== "global" ? <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-900">
+        <p>このサーバーの人数・VC・Discord活動・関連プレイヤーと、接続ShardのPingを表示しています。通信量・処理・PC/DB容量はBot全体で確認できます。</p>
+        <button type="button" onClick={() => setScope("global")} className="shrink-0 font-semibold underline underline-offset-2">Bot全体を見る</button>
+      </div> : null}
       <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="期間のBot TCP受信量" metric="receivedBytes" value={summary?.receivedBytes?.total} detail={`観測日平均 ${formatBotValue("receivedBytes", summary?.receivedBytes?.average)}`} icon={ArrowDownToLine} />
-        <SummaryCard label="期間のBot TCP送信量" metric="sentBytes" value={summary?.sentBytes?.total} detail={`観測日平均 ${formatBotValue("sentBytes", summary?.sentBytes?.average)}`} icon={ArrowUpFromLine} />
+        {scope === "global" ? <>
+          <SummaryCard label="期間のBot TCP受信量" metric="receivedBytes" value={summary?.receivedBytes?.total} detail={`観測日平均 ${formatBotValue("receivedBytes", summary?.receivedBytes?.average)}`} icon={ArrowDownToLine} />
+          <SummaryCard label="期間のBot TCP送信量" metric="sentBytes" value={summary?.sentBytes?.total} detail={`観測日平均 ${formatBotValue("sentBytes", summary?.sentBytes?.average)}`} icon={ArrowUpFromLine} />
+        </> : null}
         <SummaryCard label={scope === "global" ? "Gateway Ping" : "Gateway Ping（接続Shard）"} metric="gatewayPingMs" value={summary?.gatewayPingMs?.latest} detail={`観測平均 ${formatBotValue("gatewayPingMs", summary?.gatewayPingMs?.average)}`} icon={Activity} />
         <SummaryCard label="VC接続人数" metric="voiceMembers" value={summary?.voiceMembers?.latest} detail={`延べ接続 ${formatBotValue("voiceMemberSeconds", summary?.voiceMemberSeconds?.total)}`} icon={Users} />
         <SummaryCard label="osu!アクティブ人数" metric="osuActivePlayers" value={summary?.osuActivePlayers?.latest} detail="DB保存リザルトの直近30分で判定" icon={Users} />
         <SummaryCard label="受信メッセージ" metric="messageCount" value={summary?.messageCount?.total} detail={`観測日平均 ${formatBotValue("messageCount", summary?.messageCount?.average)}`} icon={Activity} />
-        <SummaryCard label="DB使用容量" metric="dbBytes" value={summary?.dbBytes?.latest} detail={`行数 ${formatBotValue("dbRows", summary?.dbRows?.latest)}（概算）`} icon={Database} />
-        <SummaryCard label="PCディスク使用量" metric="diskUsedBytes" value={summary?.diskUsedBytes?.latest} detail={`総容量 ${formatBotValue("diskTotalBytes", summary?.diskTotalBytes?.latest)}`} icon={HardDrive} />
+        {scope === "global" ? <>
+          <SummaryCard label="DB使用容量" metric="dbBytes" value={summary?.dbBytes?.latest} detail={`行数 ${formatBotValue("dbRows", summary?.dbRows?.latest)}（概算）`} icon={Database} />
+          <SummaryCard label="PCディスク使用量" metric="diskUsedBytes" value={summary?.diskUsedBytes?.latest} detail={`総容量 ${formatBotValue("diskTotalBytes", summary?.diskTotalBytes?.latest)}`} icon={HardDrive} />
+        </> : null}
       </section>
       <div className="mt-5 flex gap-1 overflow-x-auto rounded-md border bg-white p-1" role="tablist" aria-label="Bot統計の種類">
-        {tabs.map((item) => <button key={item.id} type="button" role="tab" id={`bot-tab-${item.id}`} aria-controls="bot-metric-panel" aria-selected={tab === item.id} onClick={() => setTab(item.id)} className={`shrink-0 rounded px-4 py-2 text-xs font-medium ${tab === item.id ? "bg-[#eef4fc] text-[#0051c3]" : "text-[#657389] hover:bg-[#f5f7fa]"}`}>{item.label}</button>)}
+        {tabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`bot-tab-${item.id}`} aria-controls="bot-metric-panel" aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={(event) => {
+          const next = botTabNavigationIndex(index, event.key, tabs.length);
+          if (next == null) return;
+          event.preventDefault();
+          setTab(tabs[next].id);
+          event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`#bot-tab-${tabs[next].id}`)?.focus();
+        }} className={`shrink-0 rounded px-4 py-2 text-xs font-medium ${tab === item.id ? "bg-[#eef4fc] text-[#0051c3]" : "text-[#657389] hover:bg-[#f5f7fa]"}`}>{item.label}</button>)}
       </div>
       <div id="bot-metric-panel" role="tabpanel" aria-labelledby={`bot-tab-${tab}`} className="mt-4 grid gap-4 xl:grid-cols-2">
         {tab === "network" ? <>
-          <StatisticsChart key={`${range}:${scope}:traffic`} title="Bot TCP送信・受信データ量" description={`各区間のTCP通信量。集約幅 約${Math.max(1, data.bucketSeconds / 60).toLocaleString("ja-JP", { maximumFractionDigits: 1 })}分。音楽のUDP・別プロセスは対象外。`} data={points} series={metricSeries(["receivedBytes", "sentBytes"])} />
-          <StatisticsChart key={`${range}:${scope}:ping`} title="定期Ping" description="Gateway・Discord API・DBを色で区別。値が低いほど応答が速いことを示します。" data={points} series={metricSeries(["gatewayPingMs", "discordApiPingMs", "dbPingMs"])} />
-          <StatisticsChart key={`${range}:${scope}:speed`} title="通信速度" description="サンプル区間の平均速度。受信は青、送信は橙です。" data={points} series={metricSeries(["receiveBps", "sendBps"])} />
-          <StatisticsChart key={`${range}:${scope}:network-scope`} title="外部・ローカル通信の内訳" description="外部宛てとPC内の通信を分離。Bot以外の通信は含めません。" data={points} series={metricSeries(["externalReceivedBytes", "externalSentBytes", "localReceivedBytes", "localSentBytes"])} />
+          <StatisticsChart key={`${range}:${scope}:traffic`} title="Bot TCP送信・受信データ量" description={`各区間のTCP通信量。集約幅 約${Math.max(1, data.bucketSeconds / 60).toLocaleString("ja-JP", { maximumFractionDigits: 1 })}分。音楽のUDP・別プロセスは対象外。`} data={points} series={metricSeries(["receivedBytes", "sentBytes"])} emptyDescription={globalOnlyDescription} />
+          <StatisticsChart key={`${range}:${scope}:ping`} title="定期Ping" description={scope === "global" ? "Gateway・Discord API・DBを色で区別。値が低いほど応答が速いことを示します。" : "このサーバーが接続しているShardのGateway Ping。Discord API・DB PingはBot全体で確認できます。"} data={points} series={metricSeries(scope === "global" ? ["gatewayPingMs", "discordApiPingMs", "dbPingMs"] : ["gatewayPingMs"])} />
+          <StatisticsChart key={`${range}:${scope}:speed`} title="通信速度" description="サンプル区間の平均速度。受信は青、送信は橙です。" data={points} series={metricSeries(["receiveBps", "sendBps"])} emptyDescription={globalOnlyDescription} />
+          <StatisticsChart key={`${range}:${scope}:network-scope`} title="外部・ローカル通信の内訳" description="外部宛てとPC内の通信を分離。Bot以外の通信は含めません。" data={points} series={metricSeries(["externalReceivedBytes", "externalSentBytes", "localReceivedBytes", "localSentBytes"])} emptyDescription={globalOnlyDescription} />
         </> : null}
         {tab === "community" ? <>
           <StatisticsChart key={`${range}:${scope}:vc`} title="VC・Discordアクティブ人数" description="VC接続人数、使用中VC数、直近のDiscord活動人数。全体のVC・活動人数は同じユーザーIDを重複計上しません。" data={points} series={metricSeries(["voiceMembers", "voiceChannels", "activeDiscordUsers"])} />
-          <StatisticsChart key={`${range}:${scope}:members`} title="サーバー人数" description="Discordの近似人数（約5分キャッシュ）またはGateway人数。全サーバーでは同じユーザーを重複計上します。" data={points} series={metricSeries(["memberCount", "guildCount"])} />
+          <StatisticsChart key={`${range}:${scope}:members`} title="サーバー人数・参加サーバー数" description="人数は左軸、参加サーバー数は右軸。Discordの近似人数（約5分キャッシュ）またはGateway人数。全体では同じユーザーを重複計上します。" data={points} series={[...metricSeries(["memberCount"]), { key: "guildCount", label: "参加サーバー数", color: colors[1], metric: "guildCount", axis: "right" }]} />
           <StatisticsChart key={`${range}:${scope}:commands`} title="メッセージ・コマンド利用" description="受信メッセージと呼び出されたスラッシュコマンド数（成功・失敗を含む）。この統計では本文を保存しません。" data={points} series={metricSeries(["messageCount", "commandCount"])} bar />
-          <StatisticsChart key={`${range}:${scope}:vc-time`} title="VC延べ接続時間・Bot接続時間" description="各サーバーのVC人数×接続秒数の合計。同じユーザーの複数サーバー接続は加算するため、重複除外したVC人数とは別です。" data={points} series={metricSeries(["voiceMemberSeconds", "botOnlineSeconds"])} />
+          <StatisticsChart key={`${range}:${scope}:vc-time`} title="VC延べ接続時間" description="各サーバーのVC人数×接続時間の合計。同じユーザーの複数サーバー接続は加算するため、重複除外したVC人数とは別です。" data={points} series={metricSeries(["voiceMemberSeconds"])} />
+          <StatisticsChart key={`${range}:${scope}:bot-online`} title="Bot接続時間" description={`観測した接続時間の区間合計。期間合計 ${formatBotValue("botOnlineSeconds", summary?.botOnlineSeconds?.total)} · 観測日平均 ${formatBotValue("botOnlineSeconds", summary?.botOnlineSeconds?.average)}。未収集時間は補完しません。`} data={points} series={metricSeries(["botOnlineSeconds"])} />
         </> : null}
         {tab === "osu" ? <>
           <StatisticsChart key={`${range}:${scope}:osu-active`} title="追跡・osu!アクティブ人数" description="アクティブ人数はDBに保存された直近30分のリザルトがあるプレイヤー。ゲーム内オンライン人数ではありません。" data={points} series={metricSeries(["osuActivePlayers", "trackedPlayers"])} />
           <StatisticsChart key={`${range}:${scope}:osu-maps`} title="保存済みプレイ・ユニーク譜面" description="DB内のリザルト件数と譜面IDの重複を除いた件数。未取得のプレイは含みません。" data={points} series={metricSeries(["storedScores", "uniqueBeatmaps"])} />
+          <StatisticsChart key={`${range}:${scope}:osu-profile-count`} title="osu!プロフィール累計プレイ回数" description="追跡プレイヤー×モードの最新プロフィール値を合計。下の保存済みリザルト件数とは別で、登録プレイヤーの変更でも値が変わります。" data={points} series={metricSeries(["osuLifetimePlayCount"])} />
+          <StatisticsChart key={`${range}:${scope}:osu-profile-time`} title="osu!プロフィール累計プレイ時間" description="追跡プレイヤー×モードの最新プロフィール値を合計。保存済み譜面長から推定した時間とは別です。" data={points} series={metricSeries(["osuLifetimePlaySeconds"])} />
         </> : null}
-        {tab === "resources" ? <>
-          <StatisticsChart key={`${range}:${scope}:resources`} title="Bot CPU・メモリ" description="CPUは左軸（1コア=100%、複数コア利用時は100%超）、メモリは右軸Bytes。PC全体とは別です。" data={points} series={[...metricSeries(["cpuPercent"]), { key: "memoryBytes", label: "Botメモリ使用量", color: colors[2], metric: "memoryBytes", axis: "right" }]} />
+        {tab === "resources" ? scope !== "global" ? <>
+          <section className="cp-panel px-5 py-8 text-sm leading-6 text-[#68768a]">
+            <h2 className="font-semibold text-[#39475b]">PC・DB容量とレンダー処理はBot全体の指標です</h2><p className="mt-2">これらはサーバーごとに分割できないため、この範囲では表示しません。通知キューはこのサーバーの通知ルールに対応する値です。</p>
+            <button type="button" onClick={() => setScope("global")} className="mt-3 font-semibold text-[#0051c3] underline underline-offset-2">Bot全体の処理・容量を見る</button>
+          </section>
+          <StatisticsChart key={`${range}:${scope}:notifications`} title="このサーバーの通知キュー" description="このサーバーの通知ルールによる待機件数と再試行待ち件数。レンダリングキューはBot全体で確認できます。" data={points} series={metricSeries(["notificationPending", "notificationFailed"])} />
+        </> : <>
+          <StatisticsChart key={`${range}:${scope}:resources`} title="Bot CPU・メモリ" description="CPUは左軸（1コア=100%、複数コア利用時は100%超）、メモリは右軸。PC全体とは別です。" data={points} series={[...metricSeries(["cpuPercent"]), { key: "memoryBytes", label: "Botメモリ使用量", color: colors[2], metric: "memoryBytes", axis: "right" }]} />
           <StatisticsChart key={`${range}:${scope}:loop`} title="イベントループ遅延" description="Botが処理を再開するまでの遅れ。CPU負荷・長い同期処理の影響を確認できます。" data={points} series={metricSeries(["eventLoopLagMs"])} />
-          <StatisticsChart key={`${range}:${scope}:storage`} title="DB・動画・音源の保存容量" description="DB、Renderer動画、音源それぞれの使用Bytes。取得できない保存先は未収集です。" data={points} series={metricSeries(["dbBytes", "videoBytes", "audioBytes"])} />
+          <StatisticsChart key={`${range}:${scope}:storage`} title="DB・動画・音源の保存容量" description="DB、Renderer動画、音源それぞれの使用容量。取得できない保存先は未収集です。" data={points} series={metricSeries(["dbBytes", "videoBytes", "audioBytes"])} />
+          <StatisticsChart key={`${range}:${scope}:disk`} title="PCディスク使用量・総容量" description="容量計測対象ディスクの使用量と総容量。動画・音源だけでなく、ディスク上の他のファイルも含みます。" data={points} series={metricSeries(["diskUsedBytes", "diskTotalBytes"])} />
+          <StatisticsChart key={`${range}:${scope}:db-rows`} title="DB使用容量・データ行数" description="使用容量は左軸、行数は右軸。行数はPostgresの概算値で、厳密な全行カウントではありません。" data={points} series={[...metricSeries(["dbBytes"]), { key: "dbRows", label: "DBデータ行数（概算）", color: colors[3], metric: "dbRows", axis: "right" }]} />
           <StatisticsChart key={`${range}:${scope}:operations`} title="通知・レンダリングキュー" description="待機件数と処理中本数。過去の完了件数ではありません。" data={points} series={metricSeries(["notificationPending", "notificationFailed", "renderQueue", "activeRenders"])} />
         </> : null}
       </div>
@@ -191,7 +219,7 @@ export function BotStatistics() {
         </div>
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           <StatisticsChart key={`${range}:${scope}:history`} title={`メッセージ・プレイ回数（${historyInterval}単位）`} description={`JST基準・集約幅 ${historyInterval}。各区間の合計を比較。欠測は補間しません。`} data={historical} series={[{ key: "messages", label: "メッセージ", color: colors[0], metric: "messageCount" }, { key: "plays", label: "保存プレイ", color: colors[1], metric: "storedScores" }]} bar />
-          <StatisticsChart key={`${range}:${scope}:history-time`} title={`プレイ時間・譜面数（${historyInterval}単位）`} description={`集約幅 ${historyInterval}。参考プレイ時間は左軸Seconds、ユニーク譜面数は右軸。`} data={historical} series={[{ key: "playTimeSeconds", label: "プレイ時間", color: colors[2], metric: "osuLifetimePlaySeconds" }, { key: "uniqueBeatmaps", label: "ユニーク譜面", color: colors[3], metric: "uniqueBeatmaps", axis: "right" }]} />
+          <StatisticsChart key={`${range}:${scope}:history-time`} title={`プレイ時間・譜面数（${historyInterval}単位）`} description={`集約幅 ${historyInterval}。参考プレイ時間は左軸、ユニーク譜面数は右軸。`} data={historical} series={[{ key: "playTimeSeconds", label: "プレイ時間", color: colors[2], metric: "osuLifetimePlaySeconds" }, { key: "uniqueBeatmaps", label: "ユニーク譜面", color: colors[3], metric: "uniqueBeatmaps", axis: "right" }]} />
           <StatisticsChart key={`${range}:${scope}:hours`} title={`活動時間帯（JST・${hourView === "average" ? "観測日平均" : "合計"}）`} description="メッセージとプレイ回数の活発な時間を比較。未収集は0ではなく空白です。" data={hourly} series={[{ key: "messages", label: "メッセージ", color: colors[0], metric: "messageCount" }, { key: "plays", label: "保存プレイ", color: colors[1], metric: "storedScores" }]} bar />
           <StatisticsChart key={`${range}:${scope}:vc-hours`} title={`VC利用時間帯（JST・${hourView === "average" ? "観測日平均" : "合計"}）`} description="人数×接続時間の延べ秒数。サンプル区間から集計した実測値です。" data={hourly} series={[{ key: "voiceMemberSeconds", label: "VC延べ接続", color: colors[4], metric: "voiceMemberSeconds" }]} bar />
         </div>
@@ -205,7 +233,7 @@ export function BotStatistics() {
       <section className="cp-panel mt-7 overflow-hidden">
         <div className="border-b px-5 py-4"><h2 className="text-sm font-semibold">全計測値の詳細</h2><p className="mt-1 text-[11px] leading-5 text-[#748094]">人数・Ping・容量は観測時間で加重した平均。通信量・件数・接続時間は合計÷観測したJST日数で、未観測日を平均の分母に含めません。最小・最大・直近値は各サンプル区間の値です。</p></div>
         <div className="overflow-x-auto"><table className="w-full min-w-[880px] text-xs"><thead className="bg-[#f8fafc] text-[#6c788d]"><tr>{["分類 / 計測値", "直近", "平均", "最小", "最大", "期間合計"].map((label) => <th key={label} className="px-4 py-3 text-left font-medium">{label}</th>)}</tr></thead>
-          <tbody>{metricKeys.map((key) => {
+          <tbody>{visibleMetricKeys.map((key) => {
             const metric = BOT_STATISTIC_METRICS[key]; const item = summary?.[key];
             return <tr key={key} className="border-t hover:bg-[#fafbfd]"><td className="px-4 py-3"><span className="mr-2 text-[10px] text-[#8a94a3]">{groupLabels[metric.group]}</span>{metric.label}</td>
               <td className="whitespace-nowrap px-4 py-3">{formatBotValue(key, item?.latest)}</td><td className="whitespace-nowrap px-4 py-3">{formatBotValue(key, item?.average)}{item?.average != null && metric.kind === "delta" ? " /日" : ""}</td>

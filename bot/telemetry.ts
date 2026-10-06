@@ -5,15 +5,19 @@ import { sql } from "drizzle-orm";
 
 import { getDb } from "../src/db";
 import { getBotTelemetryContext, insertBotTelemetrySamples } from "../src/db/bot-telemetry-repository";
-import type { BotMetricValues, BotTelemetryInput } from "../src/lib/bot-statistics";
+import { BOT_STATISTIC_METRICS, type BotMetricKey, type BotMetricValues, type BotTelemetryInput } from "../src/lib/bot-statistics";
 import { startNetworkTelemetry, type NetworkTotals } from "./network-telemetry";
 
 const SAMPLE_INTERVAL_MS = 60_000;
 const ACTIVE_WINDOW_MS = 15 * 60_000;
 const MEMBER_CACHE_MS = 5 * 60_000;
+const MAX_QUEUED_SAMPLES = 240;
+const STOP_TIMEOUT_MS = 3_000;
+const CONTEXT_KEYS: BotMetricKey[] = ["osuActivePlayers", "trackedPlayers", "storedScores", "uniqueBeatmaps", "osuLifetimePlayCount", "osuLifetimePlaySeconds", "notificationPending", "notificationFailed"];
+const unknownContext = Object.fromEntries(CONTEXT_KEYS.map((key) => [key, null])) as BotMetricValues;
 
 type ActivityTotals = { messageCount: number; commandCount: number; voiceMemberSeconds: number; botOnlineSeconds: number };
-type GuildActivity = { label: string; present: boolean; voice: Map<string, string>; activity: Map<string, number>; totals: ActivityTotals };
+type GuildActivity = { label: string; present: boolean; available: boolean; voice: Map<string, string>; activity: Map<string, number>; totals: ActivityTotals };
 type ActivitySnapshot = { global: ActivityTotals; guilds: Map<string, ActivityTotals> };
 
 function activityTotals(): ActivityTotals {
@@ -38,10 +42,10 @@ export class BotActivityTracker {
     this.lastAt = Math.max(now, this.lastAt);
     if (this.ready) this.global.botOnlineSeconds += seconds;
     for (const guild of this.guilds.values()) {
-      const voiceSeconds = this.ready && guild.present ? guild.voice.size * seconds : 0;
+      const voiceSeconds = this.ready && guild.present && guild.available ? guild.voice.size * seconds : 0;
       guild.totals.voiceMemberSeconds += voiceSeconds;
       this.global.voiceMemberSeconds += voiceSeconds;
-      if (this.ready && guild.present) guild.totals.botOnlineSeconds += seconds;
+      if (this.ready && guild.present && guild.available) guild.totals.botOnlineSeconds += seconds;
     }
   }
 
@@ -50,11 +54,12 @@ export class BotActivityTracker {
   ensureGuild(id: string, label: string) {
     let guild = this.guilds.get(id);
     if (!guild) {
-      guild = { label, present: true, voice: new Map(), activity: new Map(), totals: activityTotals() };
+      guild = { label, present: true, available: true, voice: new Map(), activity: new Map(), totals: activityTotals() };
       this.guilds.set(id, guild);
     }
     guild.label = label;
     guild.present = true;
+    guild.available = true;
     return guild;
   }
 
@@ -72,6 +77,15 @@ export class BotActivityTracker {
   syncVoice(id: string, label: string, voice: Map<string, string>, now: number) {
     this.advance(now);
     this.ensureGuild(id, label).voice = voice;
+  }
+
+  unavailableGuild(id: string, label: string, now: number) {
+    this.advance(now);
+    const guild = this.ensureGuild(id, label);
+    guild.available = false;
+    // Discord keeps an unavailable guild's stale voice cache. Never integrate
+    // those voices until a fresh GuildAvailable cache has been received.
+    guild.voice.clear();
   }
 
   recordMessage(id: string, label: string, userId: string, now: number) {
@@ -104,16 +118,19 @@ export class BotActivityTracker {
     const globalVoice = new Set<string>();
     const guilds = new Map<string, BotMetricValues>();
     let voiceChannels = 0;
+    let available = this.ready;
     for (const [id, guild] of this.guilds) {
       for (const [userId, lastAt] of guild.activity) if (now - lastAt > ACTIVE_WINDOW_MS) guild.activity.delete(userId);
-      const active = new Set([...guild.activity.keys(), ...(this.ready ? guild.voice.keys() : [])]);
+      const observed = this.ready && guild.available;
+      if (guild.present && !guild.available) available = false;
+      const active = new Set([...guild.activity.keys(), ...(observed ? guild.voice.keys() : [])]);
       for (const userId of active) globalActive.add(userId);
       for (const userId of guild.voice.keys()) globalVoice.add(userId);
       const channels = new Set(guild.voice.values()).size;
       voiceChannels += channels;
-      guilds.set(id, { activeDiscordUsers: active.size, voiceMembers: !guild.present ? 0 : this.ready ? guild.voice.size : null, voiceChannels: !guild.present ? 0 : this.ready ? channels : null });
+      guilds.set(id, { activeDiscordUsers: !guild.present ? 0 : observed ? active.size : null, voiceMembers: !guild.present ? 0 : observed ? guild.voice.size : null, voiceChannels: !guild.present ? 0 : observed ? channels : null });
     }
-    return { global: { activeDiscordUsers: globalActive.size, voiceMembers: this.ready ? globalVoice.size : null, voiceChannels: this.ready ? voiceChannels : null }, guilds };
+    return { global: { activeDiscordUsers: available ? globalActive.size : null, voiceMembers: available ? globalVoice.size : null, voiceChannels: available ? voiceChannels : null }, guilds };
   }
 }
 
@@ -153,6 +170,33 @@ async function databasePing() {
 
 export type BotTelemetryHandle = { sampleNow: () => Promise<void>; stop: () => Promise<void> };
 
+/** Keep the uncertain attempted head immutable; only unattempted rows may merge. */
+export function compactBotTelemetryQueue(queue: BotTelemetryInput[][], maximum = MAX_QUEUED_SAMPLES) {
+  let compacted = false;
+  const limit = Math.max(2, maximum);
+  while (queue.length > limit) {
+    const earlier = new Map(queue[1].map((input) => [input.scope, input]));
+    const later = new Map(queue[2].map((input) => [input.scope, input]));
+    const end = queue[2][0].sampledAt;
+    const merged = [...new Set([...earlier.keys(), ...later.keys()])].map((scope) => {
+      const before = earlier.get(scope);
+      const after = later.get(scope);
+      const metrics: BotMetricValues = {};
+      for (const key of new Set([...Object.keys(before?.metrics ?? {}), ...Object.keys(after?.metrics ?? {})]) as Set<BotMetricKey>) {
+        const left = before?.metrics[key];
+        const right = after?.metrics[key];
+        metrics[key] = BOT_STATISTIC_METRICS[key].kind === "delta"
+          ? left == null && right == null ? null : (left ?? 0) + (right ?? 0)
+          : null;
+      }
+      return { ...(after ?? before!), sampledAt: end, intervalSeconds: (before?.intervalSeconds ?? 0) + (after?.intervalSeconds ?? 0), metrics };
+    });
+    queue.splice(1, 2, merged);
+    compacted = true;
+  }
+  return compacted;
+}
+
 /** Low-frequency, isolated telemetry; failures never enter command/notification paths. */
 export function startBotTelemetry(client: Client): BotTelemetryHandle {
   const sessionId = randomUUID();
@@ -160,18 +204,27 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
   const loop = monitorEventLoopDelay({ resolution: 20 });
   loop.enable();
   const tracker = new BotActivityTracker(performance.now());
-  let committedAt = performance.now();
-  let committedActivity = tracker.snapshot(committedAt);
-  let committedNetwork: NetworkTotals = network.snapshot();
-  let committedCpu = process.cpuUsage();
+  let observedAt = performance.now();
+  let observedActivity = tracker.snapshot(observedAt);
+  let observedNetwork: NetworkTotals = network.snapshot();
+  let observedCpu = process.cpuUsage();
   let lastSampleMs = Date.now() - 1;
   let stopped = false;
-  let running: Promise<void> | undefined;
+  let stopping = false;
+  let collecting: Promise<void> | undefined;
+  let samplePromise: Promise<void> | undefined;
+  let flushing: Promise<void> | undefined;
+  let stopPromise: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let pending: { inputs: BotTelemetryInput[]; activity: ActivitySnapshot; network: NetworkTotals; cpu: NodeJS.CpuUsage; at: number } | undefined;
+  const queue: BotTelemetryInput[][] = [];
+  let compressionWarning = false;
   const memberCache = new Map<string, { at: number; count: number | null }>();
 
-  for (const guild of client.guilds.cache.values()) tracker.syncVoice(guild.id, guild.name, guildVoiceMembers(guild, client), performance.now());
+  function syncGuild(guild: Guild, now: number) {
+    if (guild.available === false) tracker.unavailableGuild(guild.id, guild.name, now);
+    else tracker.syncVoice(guild.id, guild.name, guildVoiceMembers(guild, client), now);
+  }
+  for (const guild of client.guilds.cache.values()) syncGuild(guild, performance.now());
   tracker.setReady(botGatewayConnected(client), performance.now());
 
   async function memberCount(guild: Guild) {
@@ -194,52 +247,53 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
     return count;
   }
 
-  async function persistPending() {
-    if (!pending || stopped) return;
-    const retained = pending;
-    // Same session/scope/sample timestamp is retried after uncertain DB failure;
-    // the repository's unique key makes this idempotent, without losing deltas.
-    await insertBotTelemetrySamples(retained.inputs);
-    committedAt = retained.at;
-    committedActivity = retained.activity;
-    committedNetwork = retained.network;
-    committedCpu = retained.cpu;
-    pending = undefined;
+  function flushQueue() {
+    if (flushing) return flushing;
+    flushing = (async () => {
+      while (queue.length && !stopped) {
+        const retained = queue[0];
+        // Retrying the same immutable session/scope/timestamp preserves
+        // idempotency even if a connection failed after the DB committed.
+        await insertBotTelemetrySamples(retained);
+        queue.shift();
+      }
+    })().catch((error) => console.error("[telemetry] samples retained for retry:", error))
+      .finally(() => { flushing = undefined; });
+    return flushing;
   }
 
-  async function collect() {
-    await persistPending();
-    if (stopped) return;
+  function capture(
+    context: Awaited<ReturnType<typeof getBotTelemetryContext>>,
+    apiPing: number | null,
+    dbPing: number | null,
+    members: ReadonlyArray<readonly [string, number | null]>,
+    final = false,
+  ) {
     const currentGuilds = [...client.guilds.cache.values()];
-    const [context, apiPing, dbPing, members] = await Promise.all([
-      getBotTelemetryContext(), discordApiPing(), databasePing(),
-      Promise.all(currentGuilds.map(async (guild) => [guild.id, await memberCount(guild)] as const)),
-    ]);
-    if (stopped) return;
     const now = performance.now();
-    const connected = botGatewayConnected(client);
+    const connected = !final && botGatewayConnected(client);
     tracker.setReady(connected, now);
     for (const id of tracker.guilds.keys()) if (!client.guilds.cache.has(id)) tracker.leaveGuild(id, now);
-    for (const guild of currentGuilds) tracker.syncVoice(guild.id, guild.name, guildVoiceMembers(guild, client), now);
+    for (const guild of currentGuilds) syncGuild(guild, now);
     const currentActivity = tracker.snapshot(now);
     const community = tracker.community(now);
     const currentNetwork = network.snapshot();
     const currentCpu = process.cpuUsage();
-    const intervalSeconds = Math.max(0.001, (now - committedAt) / 1_000);
-    const networkDelta = difference(currentNetwork, committedNetwork);
+    const intervalSeconds = Math.max(0.001, (now - observedAt) / 1_000);
+    const networkDelta = difference(currentNetwork, observedNetwork);
     const memberById = new Map(members);
     // Manual/ready-triggered samples can complete in one millisecond. Keep
     // their idempotency keys distinct without relying on insert timing.
     const sampledAt = new Date(Math.max(Date.now(), lastSampleMs + 1));
     lastSampleMs = sampledAt.getTime();
     const globalMetrics: BotMetricValues = {
-      ...context.global, ...difference(currentActivity.global, committedActivity.global), ...community.global, ...networkDelta,
+      ...unknownContext, ...context.global, ...difference(currentActivity.global, observedActivity.global), ...community.global, ...networkDelta,
       receiveBps: networkDelta.receivedBytes / intervalSeconds,
       sendBps: networkDelta.sentBytes / intervalSeconds,
       gatewayPingMs: connected ? validNumber(client.ws.ping) : null, discordApiPingMs: apiPing, dbPingMs: dbPing,
       guildCount: currentGuilds.length,
       memberCount: members.every(([, count]) => count !== null) ? members.reduce((total, [, count]) => total + (count ?? 0), 0) : null,
-      cpuPercent: Math.max(0, (currentCpu.user - committedCpu.user + currentCpu.system - committedCpu.system) / (intervalSeconds * 10_000)),
+      cpuPercent: Math.max(0, (currentCpu.user - observedCpu.user + currentCpu.system - observedCpu.system) / (intervalSeconds * 10_000)),
       memoryBytes: process.memoryUsage().rss,
       eventLoopLagMs: validNumber(loop.mean / 1_000_000),
     };
@@ -248,62 +302,101 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
       inputs.push({
         scope: `guild:${id}`, scopeLabel: tracker.guilds.get(id)!.label, sessionId, sampledAt, intervalSeconds,
         metrics: {
-          ...context.guilds[id], ...difference(totals, committedActivity.guilds.get(id) ?? activityTotals()), ...community.guilds.get(id),
+          ...unknownContext, ...context.guilds[id], ...difference(totals, observedActivity.guilds.get(id) ?? activityTotals()), ...community.guilds.get(id),
           guildCount: client.guilds.cache.has(id) ? 1 : 0,
           memberCount: memberById.get(id) ?? null,
           gatewayPingMs: connected ? validNumber(client.guilds.cache.get(id)?.shard.ping) : null,
         },
       });
     }
-    pending = { inputs, activity: currentActivity, network: currentNetwork, cpu: currentCpu, at: now };
+    queue.push(inputs);
+    observedAt = now;
+    observedActivity = currentActivity;
+    observedNetwork = currentNetwork;
+    observedCpu = currentCpu;
     loop.reset();
-    await persistPending();
+    if (compactBotTelemetryQueue(queue) && !compressionWarning) {
+      compressionWarning = true;
+      console.warn("[telemetry] DB backlog compacted: cumulative counters retained; older instantaneous observations are unavailable");
+    }
+  }
+
+  async function collect() {
+    const currentGuilds = [...client.guilds.cache.values()];
+    const [context, apiPing, dbPing, members] = await Promise.all([
+      getBotTelemetryContext(), discordApiPing(), databasePing(),
+      Promise.all(currentGuilds.map(async (guild) => [guild.id, await memberCount(guild)] as const)),
+    ]);
+    if (stopping || stopped) return;
+    capture(context, apiPing, dbPing, members);
   }
 
   function sampleNow() {
-    if (stopped) return Promise.resolve();
-    if (running) return running;
-    running = collect().catch((error) => console.error("[telemetry] sample retained for retry:", error)).finally(() => { running = undefined; });
-    return running;
+    if (stopping || stopped) return Promise.resolve();
+    if (collecting) return samplePromise!;
+    collecting = collect().catch((error) => console.error("[telemetry] collection failed:", error))
+      .finally(() => { collecting = undefined; });
+    // Collection is single-flight independently of persistence. A slow or
+    // unavailable DB must not freeze the next minute's measured observations.
+    samplePromise = collecting.then(() => stopping || stopped ? undefined : flushQueue());
+    return samplePromise;
   }
 
   const onReady = () => {
     tracker.setReady(botGatewayConnected(client), performance.now());
-    for (const guild of client.guilds.cache.values()) tracker.syncVoice(guild.id, guild.name, guildVoiceMembers(guild, client), performance.now());
+    for (const guild of client.guilds.cache.values()) syncGuild(guild, performance.now());
     void sampleNow();
     timer ??= setInterval(() => { void sampleNow(); }, SAMPLE_INTERVAL_MS);
     timer.unref();
   };
   const onConnection = () => tracker.setReady(botGatewayConnected(client), performance.now());
   const onMessage = (message: { guildId: string | null; guild?: { name: string } | null; author: { id: string; bot: boolean } }) => {
-    if (!stopped && message.guildId && !message.author.bot) tracker.recordMessage(message.guildId, message.guild?.name ?? message.guildId, message.author.id, performance.now());
+    if (!stopping && !stopped && message.guildId && !message.author.bot) tracker.recordMessage(message.guildId, message.guild?.name ?? message.guildId, message.author.id, performance.now());
   };
   const onCommand = (interaction: { guildId: string | null; guild?: { name: string } | null; user: { id: string; bot?: boolean }; isChatInputCommand: () => boolean }) => {
-    if (!stopped && !interaction.user.bot && interaction.isChatInputCommand()) tracker.recordCommand(interaction.guildId, interaction.guild?.name ?? interaction.guildId ?? "DM");
+    if (!stopping && !stopped && !interaction.user.bot && interaction.isChatInputCommand()) tracker.recordCommand(interaction.guildId, interaction.guild?.name ?? interaction.guildId ?? "DM");
   };
   const onVoice = (_before: VoiceState, after: VoiceState) => {
-    if (!stopped && !(after.member?.user.bot ?? client.users.cache.get(after.id)?.bot ?? false)) tracker.recordVoice(after.guild.id, after.guild.name, after.id, after.channelId, performance.now());
+    if (!stopping && !stopped && !(after.member?.user.bot ?? client.users.cache.get(after.id)?.bot ?? false)) tracker.recordVoice(after.guild.id, after.guild.name, after.id, after.channelId, performance.now());
   };
-  const onGuildCreate = (guild: Guild) => tracker.syncVoice(guild.id, guild.name, guildVoiceMembers(guild, client), performance.now());
+  const onGuildCreate = (guild: Guild) => syncGuild(guild, performance.now());
+  const onGuildUnavailable = (guild: Guild) => tracker.unavailableGuild(guild.id, guild.name, performance.now());
   const onGuildDelete = (guild: Guild) => { tracker.leaveGuild(guild.id, performance.now()); memberCache.delete(guild.id); };
   client.on(Events.ClientReady, onReady);
   client.on(Events.ShardDisconnect, onConnection); client.on(Events.ShardReconnecting, onConnection); client.on(Events.ShardResume, onConnection); client.on(Events.ShardReady, onConnection);
   client.on(Events.MessageCreate, onMessage); client.on(Events.InteractionCreate, onCommand); client.on(Events.VoiceStateUpdate, onVoice);
   client.on(Events.GuildCreate, onGuildCreate); client.on(Events.GuildDelete, onGuildDelete);
+  client.on(Events.GuildUnavailable, onGuildUnavailable); client.on(Events.GuildAvailable, onGuildCreate);
   if (client.isReady()) onReady();
 
   return {
     sampleNow,
-    stop: async () => {
-      if (stopped) { await running; return; }
-      stopped = true;
+    stop: () => {
+      if (stopPromise) return stopPromise;
+      stopping = true;
       if (timer) clearInterval(timer);
       client.off(Events.ClientReady, onReady);
       client.off(Events.ShardDisconnect, onConnection); client.off(Events.ShardReconnecting, onConnection); client.off(Events.ShardResume, onConnection); client.off(Events.ShardReady, onConnection);
       client.off(Events.MessageCreate, onMessage); client.off(Events.InteractionCreate, onCommand); client.off(Events.VoiceStateUpdate, onVoice);
       client.off(Events.GuildCreate, onGuildCreate); client.off(Events.GuildDelete, onGuildDelete);
-      network.stop(); loop.disable(); memberCache.clear();
-      await running;
+      client.off(Events.GuildUnavailable, onGuildUnavailable); client.off(Events.GuildAvailable, onGuildCreate);
+      // Do not start more HTTP/context reads during shutdown. Flush the final
+      // in-memory counters, even if another context read is still pending.
+      const unknownGauges = Object.fromEntries(Object.entries(BOT_STATISTIC_METRICS)
+        .filter(([, metric]) => metric.kind === "gauge").map(([key]) => [key, null])) as BotMetricValues;
+      capture({ global: unknownGauges, guilds: {} }, null, null, [...client.guilds.cache.values()]
+        .map((guild) => [guild.id, memberCache.get(guild.id)?.count ?? validNumber(guild.memberCount)] as const), true);
+      stopPromise = (async () => {
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([flushQueue(), new Promise<void>((resolve) => { deadline = setTimeout(resolve, STOP_TIMEOUT_MS); })]);
+        } finally {
+          if (deadline) clearTimeout(deadline);
+          stopped = true;
+          network.stop(); loop.disable(); memberCache.clear();
+        }
+      })();
+      return stopPromise;
     },
   };
 }
