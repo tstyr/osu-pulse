@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import type { Account, NotificationRuleConditions, ScoreEvent } from "../db/schema";
 
 const mocks = vi.hoisted(() => ({
   rows: [] as unknown[],
   changes: [] as Record<string, unknown>[],
   inserted: [] as unknown[],
+  claims: [] as unknown[],
+  updateConditions: [] as SQL[],
   insertValues: vi.fn(),
   rules: vi.fn(),
   markMatched: vi.fn(),
@@ -34,7 +38,10 @@ vi.mock("../db", () => ({
       set: (value: Record<string, unknown>) => {
         mocks.changes.push(value);
         return {
-          where: () => Object.assign(Promise.resolve(), { returning: async () => [{ id: "delivery" }] }),
+          where: (condition: SQL) => {
+            mocks.updateConditions.push(condition);
+            return Object.assign(Promise.resolve(), { returning: async () => mocks.claims });
+          },
         };
       },
     }),
@@ -57,6 +64,8 @@ beforeEach(() => {
   mocks.rows = [];
   mocks.changes = [];
   mocks.inserted = [{ id: "delivery" }];
+  mocks.claims = [{ id: "delivery" }];
+  mocks.updateConditions = [];
   mocks.rules.mockResolvedValue([rule]);
   mocks.markMatched.mockResolvedValue(undefined);
   mocks.snapshot.mockResolvedValue({ latest: null, previous: null });
@@ -64,6 +73,35 @@ beforeEach(() => {
 });
 
 describe("score notification delivery", () => {
+  it("claims database-default timestamps without an exact millisecond Date comparison", async () => {
+    // PostgreSQL now() can contain .123456; Drizzle returns only .123 here.
+    const updatedAt = new Date("2026-10-06T02:00:00.123456Z");
+    mocks.rows = [{ delivery: { id: "delivery", status: "pending", ruleId: "rule", channelId: "channel", updatedAt, attempts: 0 }, account, score, rule }];
+    await expect(dispatchDueScoreNotifications()).resolves.toMatchObject({ sent: 1, failed: 0 });
+    const claim = new PgDialect().sqlToQuery(mocks.updateConditions[0]);
+    expect(claim.sql).not.toContain('"updated_at"');
+    expect(claim.sql).toContain('"status" =');
+    expect(claim.sql).toContain('"next_attempt_at" <=');
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send when another worker has already claimed the delivery", async () => {
+    mocks.rows = [{ delivery: { id: "delivery", status: "pending", ruleId: "rule", channelId: "channel", updatedAt: new Date(), attempts: 0 }, account, score, rule }];
+    mocks.claims = [];
+    await expect(dispatchDueScoreNotifications()).resolves.toMatchObject({ sent: 0, failed: 0 });
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.changes.map((value) => value.status)).toEqual(["sending"]);
+  });
+
+  it("only reclaims sending deliveries with an expired lease", async () => {
+    mocks.rows = [{ delivery: { id: "delivery", status: "sending", ruleId: "rule", channelId: "channel", updatedAt: new Date(Date.now() - 11 * 60_000), attempts: 0 }, account, score, rule }];
+    await expect(dispatchDueScoreNotifications()).resolves.toMatchObject({ sent: 1, failed: 0 });
+    const claim = new PgDialect().sqlToQuery(mocks.updateConditions[0]);
+    expect(claim.sql).toContain('"updated_at" <=');
+    expect(claim.sql).not.toContain('"updated_at" =');
+    expect(claim.sql).toContain('"next_attempt_at" <=');
+  });
+
   it("does not retry an already sent message when rule activity persistence fails", async () => {
     mocks.rows = [{ delivery: { id: "delivery", status: "pending", ruleId: "rule", channelId: "channel", updatedAt: new Date(), attempts: 0 }, account, score, rule }];
     mocks.markMatched.mockRejectedValue(new Error("DB temporarily unavailable"));

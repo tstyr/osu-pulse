@@ -137,7 +137,11 @@ export async function dispatchDueScoreNotifications() {
     }).where(and(
       eq(scoreNotificationDeliveries.id, row.delivery.id),
       claimCondition,
-      eq(scoreNotificationDeliveries.updatedAt, row.delivery.updatedAt),
+      // PostgreSQL's default now() retains microseconds, but Drizzle decodes
+      // this timestamp into a millisecond Date. Comparing that Date for exact
+      // equality leaves newly inserted deliveries permanently unclaimable.
+      // The status/due-time guards still atomically exclude another worker's
+      // active lease; stale sending leases have their own age guard above.
       lte(scoreNotificationDeliveries.nextAttemptAt, now),
     )).returning({ id: scoreNotificationDeliveries.id });
     if (!claimed.length) continue;

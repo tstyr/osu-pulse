@@ -36,6 +36,7 @@ import { announceBotUpdate } from "./release-notifier";
 import { reportInteractionError } from "./interaction-errors";
 import { handleHelpSelect, isHelpSelect } from "./help-guide";
 import { nonOverlappingTask } from "./non-overlapping-task";
+import { startBackgroundTask } from "./background-task";
 import { dispatchScheduledGuildReports } from "../src/services/guild-reports";
 import { startConsoleForwarder } from "./console-forwarder";
 import {
@@ -154,7 +155,7 @@ process.once("exit", () => {
   releaseRuntimeLock();
 });
 
-client.once(Events.ClientReady, async (readyClient) => {
+client.once(Events.ClientReady, (readyClient) => {
   console.log(`[discord] ready as ${readyClient.user.tag} in ${readyClient.guilds.cache.size} guild(s)`);
 
   void warmRenderRecentPlayCache()
@@ -162,17 +163,25 @@ client.once(Events.ClientReady, async (readyClient) => {
     .catch((error) => console.error("[render] recent-play cache warmup failed:", error));
 
   if (lavalink) {
-    try { await lavalink.init({ ...readyClient.user }); }
-    catch (error) { console.error("[lavalink] initialization failed:", error); }
+    // Music is optional. Its connection must not delay score collection,
+    // persistent notification delivery, reminders, or status updates.
+    startBackgroundTask(
+      () => lavalink.init({ ...readyClient.user }),
+      (error) => console.error("[lavalink] initialization failed:", error),
+    );
   }
   // Stored scores can be delivered even if the osu! API is unavailable.
-  void runScoreNotificationWorker(pollController.signal)
-    .catch((error) => console.error("[osu] notification worker stopped:", error));
+  startBackgroundTask(
+    () => runScoreNotificationWorker(pollController.signal),
+    (error) => console.error("[osu] notification worker stopped:", error),
+  );
   if (process.env.OSU_CLIENT_ID && process.env.OSU_CLIENT_SECRET) {
     void reconcileAccountGuilds(client)
       .catch((error) => console.error("[osu] guild link reconciliation failed:", error));
-    void runOsuPoller(pollController.signal)
-      .catch((error) => console.error("[osu] poller stopped:", error));
+    startBackgroundTask(
+      () => runOsuPoller(pollController.signal),
+      (error) => console.error("[osu] poller stopped:", error),
+    );
   } else {
     console.warn("[osu] poller disabled: OSU_CLIENT_ID / OSU_CLIENT_SECRET missing");
   }
