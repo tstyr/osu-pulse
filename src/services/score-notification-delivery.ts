@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, notInArray, or } from "drizzle-orm";
 
 import { getDb } from "../db";
 import {
@@ -8,6 +8,7 @@ import {
   scoreEvents,
   scoreNotificationDeliveries,
   type Account,
+  type DailySnapshot,
   type ScoreEvent,
 } from "../db/schema";
 import { listMatchingNotificationRules, markNotificationRuleMatched } from "../db/feature-repository";
@@ -21,7 +22,23 @@ const DEFAULT_LOOKBACK_HOURS = 6;
 const DELIVERY_BATCH_SIZE = 25;
 const BACKFILL_INTERVAL_MS = 5 * 60_000;
 const BACKFILL_INSERT_BATCH_SIZE = 500;
+const DELIVERY_LEASE_MS = 10 * 60_000;
+const CONSECUTIVE_DB_ERROR_LIMIT = 3;
 type MatchingRules = Awaited<ReturnType<typeof listMatchingNotificationRules>>;
+
+type AcceptedNotification = {
+  id: string;
+  leaseAt: Date;
+  messageId: string | null;
+  sentAt: Date;
+  ruleId: string | null;
+  leaseConflictWarned?: boolean;
+};
+
+// Keep successful Discord acknowledgements across worker-loop restarts. If DB
+// persistence fails after Discord accepts a message, retry only the DB write,
+// never the POST. A process crash still relies on the persistent lease/nonce.
+const acceptedNotifications = new Map<string, AcceptedNotification>();
 
 function lookbackHours() {
   const configured = Number(process.env.SCORE_NOTIFICATION_LOOKBACK_HOURS ?? DEFAULT_LOOKBACK_HOURS);
@@ -58,7 +75,8 @@ export async function enqueueScoreNotificationDeliveries(account: Account, score
   return insertDeliveries(deliveryValues(score, await listMatchingNotificationRules(account.id)));
 }
 
-export async function backfillRecentScoreNotificationDeliveries() {
+export async function backfillRecentScoreNotificationDeliveries(signal?: AbortSignal) {
+  if (signal?.aborted) return { inspected: 0, queued: 0 };
   const db = getDb();
   const recent = await db.select({ score: scoreEvents, account: accounts })
     .from(scoreEvents)
@@ -70,18 +88,20 @@ export async function backfillRecentScoreNotificationDeliveries() {
   let pending: ReturnType<typeof deliveryValues> = [];
   let queued = 0;
   for (const row of recent.reverse()) {
+    if (signal?.aborted) break;
     let rules = rulesByAccount.get(row.account.id);
     if (!rules) {
       rules = await listMatchingNotificationRules(row.account.id);
       rulesByAccount.set(row.account.id, rules);
     }
+    if (signal?.aborted) break;
     pending.push(...deliveryValues(row.score, rules));
     if (pending.length >= BACKFILL_INSERT_BATCH_SIZE) {
       queued += await insertDeliveries(pending);
       pending = [];
     }
   }
-  queued += await insertDeliveries(pending);
+  if (!signal?.aborted) queued += await insertDeliveries(pending);
   return { inspected: recent.length, queued };
 }
 
@@ -93,8 +113,77 @@ function errorDetail(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
 }
 
-export async function dispatchDueScoreNotifications() {
+function deliveryLease(id: string, leaseAt: Date) {
+  return and(
+    eq(scoreNotificationDeliveries.id, id),
+    eq(scoreNotificationDeliveries.status, "sending"),
+    // Unlike the original DB default timestamp, this is the exact millisecond
+    // value written by this worker when claiming the delivery.
+    eq(scoreNotificationDeliveries.updatedAt, leaseAt),
+  );
+}
+
+async function recordRuleActivity(ruleId: string | null) {
+  if (!ruleId) return;
+  await markNotificationRuleMatched(ruleId).catch((error) => {
+    console.error(`[osu] notification rule activity update failed: rule=${ruleId}`, error);
+  });
+}
+
+async function persistAcceptedNotification(db: ReturnType<typeof getDb>, accepted: AcceptedNotification) {
+  const committed = await db.update(scoreNotificationDeliveries).set({
+    status: "sent",
+    messageId: accepted.messageId,
+    lastError: null,
+    sentAt: accepted.sentAt,
+    updatedAt: new Date(),
+  }).where(deliveryLease(accepted.id, accepted.leaseAt)).returning({ id: scoreNotificationDeliveries.id });
+  if (committed.length) {
+    acceptedNotifications.delete(accepted.id);
+    await recordRuleActivity(accepted.ruleId);
+    return;
+  }
+  const [current] = await db.select({ status: scoreNotificationDeliveries.status })
+    .from(scoreNotificationDeliveries)
+    .where(eq(scoreNotificationDeliveries.id, accepted.id))
+    .limit(1);
+  if (!current || current.status === "sent") {
+    acceptedNotifications.delete(accepted.id);
+    return;
+  }
+  // An external reset/reclaim is not evidence that Discord lost the message.
+  // Keep suppressing POSTs unless its row is already sent or actually removed.
+  if (!accepted.leaseConflictWarned) {
+    accepted.leaseConflictWarned = true;
+    console.warn(`[osu] notification acknowledgement lease changed: delivery=${accepted.id}; retaining acknowledgement, no Discord resend`);
+  }
+}
+
+export async function dispatchDueScoreNotifications(signal?: AbortSignal) {
   const db = getDb();
+  let persistenceErrors = 0;
+  let consecutiveDbErrors = 0;
+  for (const accepted of [...acceptedNotifications.values()].slice(0, DELIVERY_BATCH_SIZE)) {
+    if (signal?.aborted) break;
+    try {
+      await persistAcceptedNotification(db, accepted);
+      if (acceptedNotifications.has(accepted.id)) {
+        // A retained lease conflict must not occupy the first batch forever
+        // and starve later successful acknowledgements of their DB retry.
+        acceptedNotifications.delete(accepted.id);
+        acceptedNotifications.set(accepted.id, accepted);
+      }
+      consecutiveDbErrors = 0;
+    } catch (error) {
+      persistenceErrors += 1;
+      // Rotate transient failures so one row cannot starve other acknowledgements.
+      acceptedNotifications.delete(accepted.id);
+      acceptedNotifications.set(accepted.id, accepted);
+      console.error(`[osu] notification acknowledgement persistence retry: delivery=${accepted.id}; no Discord resend`, error);
+      if (++consecutiveDbErrors >= CONSECUTIVE_DB_ERROR_LIMIT) break;
+    }
+  }
+  if (signal?.aborted) return { processed: 0, sent: 0, failed: 0, persistenceErrors };
   const now = new Date();
   const due = await db.select({
     delivery: scoreNotificationDeliveries,
@@ -112,45 +201,64 @@ export async function dispatchDueScoreNotifications() {
         inArray(scoreNotificationDeliveries.status, ["pending", "failed"]),
         and(
           eq(scoreNotificationDeliveries.status, "sending"),
-          lte(scoreNotificationDeliveries.updatedAt, new Date(now.getTime() - 10 * 60_000)),
+          lte(scoreNotificationDeliveries.updatedAt, new Date(now.getTime() - DELIVERY_LEASE_MS)),
         ),
       ),
       lte(scoreNotificationDeliveries.nextAttemptAt, now),
+      acceptedNotifications.size
+        ? notInArray(scoreNotificationDeliveries.id, [...acceptedNotifications.keys()])
+        : undefined,
     ))
     .orderBy(asc(scoreNotificationDeliveries.nextAttemptAt))
     .limit(DELIVERY_BATCH_SIZE);
 
   let sent = 0;
   let failed = 0;
-  const snapshots = new Map<string, ReturnType<typeof getSnapshotDelta>>();
+  consecutiveDbErrors = 0;
+  const snapshots = new Map<string, Promise<{ latest: DailySnapshot | null; previous: DailySnapshot | null }>>();
   for (const row of due) {
+    if (signal?.aborted) break;
+    if (acceptedNotifications.has(row.delivery.id)) continue;
     const claimCondition = row.delivery.status === "sending"
       ? and(
         eq(scoreNotificationDeliveries.status, "sending"),
-        lte(scoreNotificationDeliveries.updatedAt, new Date(now.getTime() - 10 * 60_000)),
+        lte(scoreNotificationDeliveries.updatedAt, new Date(now.getTime() - DELIVERY_LEASE_MS)),
       )
       : eq(scoreNotificationDeliveries.status, row.delivery.status);
-    const claimed = await db.update(scoreNotificationDeliveries).set({
-      status: "sending",
-      updatedAt: new Date(),
-      nextAttemptAt: new Date(Date.now() + 10 * 60_000),
-    }).where(and(
-      eq(scoreNotificationDeliveries.id, row.delivery.id),
-      claimCondition,
-      // PostgreSQL's default now() retains microseconds, but Drizzle decodes
-      // this timestamp into a millisecond Date. Comparing that Date for exact
-      // equality leaves newly inserted deliveries permanently unclaimable.
-      // The status/due-time guards still atomically exclude another worker's
-      // active lease; stale sending leases have their own age guard above.
-      lte(scoreNotificationDeliveries.nextAttemptAt, now),
-    )).returning({ id: scoreNotificationDeliveries.id });
+    const leaseAt = new Date();
+    let claimed;
+    try {
+      claimed = await db.update(scoreNotificationDeliveries).set({
+        status: "sending",
+        updatedAt: leaseAt,
+        nextAttemptAt: new Date(leaseAt.getTime() + DELIVERY_LEASE_MS),
+      }).where(and(
+        eq(scoreNotificationDeliveries.id, row.delivery.id),
+        claimCondition,
+        // PostgreSQL's default now() retains microseconds, but Drizzle decodes
+        // this timestamp into a millisecond Date. Comparing that Date for exact
+        // equality leaves newly inserted deliveries permanently unclaimable.
+        // The status/due-time guards still atomically exclude another worker's
+        // active lease; stale sending leases have their own age guard above.
+        lte(scoreNotificationDeliveries.nextAttemptAt, now),
+      )).returning({ id: scoreNotificationDeliveries.id });
+      consecutiveDbErrors = 0;
+    } catch (error) {
+      console.error(`[osu] notification claim failed: delivery=${row.delivery.id}; retained for retry`, error);
+      if (++consecutiveDbErrors >= CONSECUTIVE_DB_ERROR_LIMIT) break;
+      continue;
+    }
     if (!claimed.length) continue;
 
+    let message: { id?: string };
     try {
       const snapshotKey = `${row.account.id}:${row.score.mode}`;
       let snapshot = snapshots.get(snapshotKey);
       if (!snapshot) {
-        snapshot = getSnapshotDelta(row.account.id, row.score.mode);
+        snapshot = getSnapshotDelta(row.account.id, row.score.mode).catch((error) => {
+          console.error(`[osu] notification snapshot unavailable: account=${row.account.id} mode=${row.score.mode}; sending score without profile delta`, error);
+          return { latest: null, previous: null };
+        });
         snapshots.set(snapshotKey, snapshot);
       }
       const { latest, previous } = await snapshot;
@@ -162,58 +270,72 @@ export async function dispatchDueScoreNotifications() {
         nonce: createHash("sha256").update(row.delivery.id).digest("hex").slice(0, 24),
         enforce_nonce: true,
       };
-      const message = await sendDiscordChannelMessage(row.delivery.channelId, payload) as { id?: string };
-      await db.update(scoreNotificationDeliveries).set({
-        status: "sent",
-        messageId: message?.id ?? null,
-        lastError: null,
-        sentAt: new Date(),
-        updatedAt: new Date(),
-      }).where(eq(scoreNotificationDeliveries.id, row.delivery.id));
-      sent += 1;
+      message = await sendDiscordChannelMessage(row.delivery.channelId, payload) as { id?: string };
     } catch (error) {
       const attempts = row.delivery.attempts + 1;
-      await db.update(scoreNotificationDeliveries).set({
-        status: "failed",
-        attempts,
-        lastError: errorDetail(error),
-        nextAttemptAt: new Date(Date.now() + retryDelay(attempts)),
-        updatedAt: new Date(),
-      }).where(eq(scoreNotificationDeliveries.id, row.delivery.id));
+      try {
+        await db.update(scoreNotificationDeliveries).set({
+          status: "failed",
+          attempts,
+          lastError: errorDetail(error),
+          nextAttemptAt: new Date(Date.now() + retryDelay(attempts)),
+          updatedAt: new Date(),
+        }).where(deliveryLease(row.delivery.id, leaseAt));
+      } catch (persistenceError) {
+        persistenceErrors += 1;
+        console.error(`[osu] notification failure persistence failed: delivery=${row.delivery.id}; persistent lease will recover`, persistenceError);
+      }
       console.error(`[osu] score notification retry scheduled: score=${row.score.osuScoreId} channel=${row.delivery.channelId} attempt=${attempts}`, error);
       failed += 1;
       continue;
     }
-    if (row.delivery.ruleId) {
-      // The message and sent state are already committed. A rule-statistics
-      // failure must never put the delivery back into the retry queue.
-      await markNotificationRuleMatched(row.delivery.ruleId).catch((error) => {
-        console.error(`[osu] notification rule activity update failed: rule=${row.delivery.ruleId}`, error);
-      });
+    sent += 1;
+    const accepted = { id: row.delivery.id, leaseAt, messageId: message?.id ?? null, sentAt: new Date(), ruleId: row.delivery.ruleId };
+    acceptedNotifications.set(accepted.id, accepted);
+    try {
+      await persistAcceptedNotification(db, accepted);
+    } catch (error) {
+      persistenceErrors += 1;
+      console.error(`[osu] notification acknowledgement persistence retry: delivery=${accepted.id}; no Discord resend`, error);
     }
   }
-  return { processed: due.length, sent, failed };
+  return { processed: due.length, sent, failed, persistenceErrors };
 }
 
 export async function runScoreNotificationWorker(signal: AbortSignal) {
   let lastBackfillAt = -Infinity;
-  while (!signal.aborted) {
-    if (Date.now() - lastBackfillAt >= BACKFILL_INTERVAL_MS) {
-      lastBackfillAt = Date.now();
+  let stalledCycles = 0;
+  let backfill: Promise<void> | undefined;
+  try {
+    while (!signal.aborted) {
+      let delayMs = 10_000;
       try {
-        const backfill = await backfillRecentScoreNotificationDeliveries();
-        if (backfill.queued) console.log(`[osu] notification outbox reconciled: inspected=${backfill.inspected} queued=${backfill.queued}`);
+        const result = await dispatchDueScoreNotifications(signal);
+        if (result.processed) console.log(`[osu] score notifications: sent=${result.sent} failed=${result.failed} persistenceErrors=${result.persistenceErrors}`);
+        stalledCycles = result.processed > 0 && result.sent === 0 && result.failed === 0 ? stalledCycles + 1 : 0;
+        if (stalledCycles === 3 || (stalledCycles > 3 && stalledCycles % 30 === 0)) {
+          console.warn(`[osu] notification outbox stalled: ${result.processed} due deliveries, no progress for ${stalledCycles} cycles; inspect claim/DB errors`);
+        }
+        // Drain a healthy backlog promptly, but never accelerate empty/error
+        // cycles or send in parallel around Discord's rate-limit handling.
+        if (result.processed === DELIVERY_BATCH_SIZE && result.sent + result.failed > 0) delayMs = 1_000;
       } catch (error) {
-        console.error("[osu] notification outbox backfill failed:", error);
+        console.error("[osu] notification outbox worker failed:", error);
       }
+      if (signal.aborted) break;
+      if (!backfill && Date.now() - lastBackfillAt >= BACKFILL_INTERVAL_MS) {
+        lastBackfillAt = Date.now();
+        // One bounded-by-driver reconciliation task at a time. It cannot delay
+        // the next dispatch cycle, and is joined at shutdown rather than raced.
+        backfill = backfillRecentScoreNotificationDeliveries(signal).then((result) => {
+          if (result.queued) console.log(`[osu] notification outbox reconciled: inspected=${result.inspected} queued=${result.queued}`);
+        }).catch((error) => {
+          console.error("[osu] notification outbox backfill failed:", error);
+        }).finally(() => { backfill = undefined; });
+      }
+      await workerDelay(delayMs, signal);
     }
-    if (signal.aborted) break;
-    try {
-      const result = await dispatchDueScoreNotifications();
-      if (result.processed) console.log(`[osu] score notifications: sent=${result.sent} failed=${result.failed}`);
-    } catch (error) {
-      console.error("[osu] notification outbox worker failed:", error);
-    }
-    await workerDelay(10_000, signal);
+  } finally {
+    await backfill;
   }
 }

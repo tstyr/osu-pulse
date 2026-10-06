@@ -5,6 +5,13 @@ import { recordServiceUsage } from "../../db/feature-repository";
 const OSU_API_BASE = "https://osu.ppy.sh/api/v2";
 const OSU_TOKEN_URL = "https://osu.ppy.sh/oauth/token";
 
+export function osuApiTimeoutMs() {
+  const configured = process.env.OSU_API_TIMEOUT_MS?.trim();
+  const milliseconds = configured ? Number(configured) : NaN;
+  if (!Number.isFinite(milliseconds)) return 20_000;
+  return Math.min(60_000, Math.max(1_000, Math.trunc(milliseconds)));
+}
+
 type CachedToken = {
   value: string;
   expiresAt: number;
@@ -59,6 +66,7 @@ async function requestToken(input?: OsuApiCredentials): Promise<string> {
       scope: "public",
     }),
     cache: "no-store",
+    signal: AbortSignal.timeout(osuApiTimeoutMs()),
   });
 
   if (!response.ok) {
@@ -90,13 +98,16 @@ async function accessToken(input?: OsuApiCredentials, forceRefresh = false) {
 }
 
 async function osuFetch<T>(path: string, retry = true, input?: OsuApiCredentials): Promise<T> {
+  // Start the API deadline after OAuth completes, so each request has its own budget.
+  const token = await accessToken(input);
   const response = await fetch(`${OSU_API_BASE}${path}`, {
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${await accessToken(input)}`,
+      Authorization: `Bearer ${token}`,
       "X-API-Version": "20220705",
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(osuApiTimeoutMs()),
   });
 
   if (response.status === 401 && retry) {
@@ -118,16 +129,18 @@ async function osuFetch<T>(path: string, retry = true, input?: OsuApiCredentials
 }
 
 async function osuPost<T>(path: string, body: unknown, retry = true, input?: OsuApiCredentials): Promise<T> {
+  const token = await accessToken(input);
   const response = await fetch(`${OSU_API_BASE}${path}`, {
     method: "POST",
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${await accessToken(input)}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       "X-API-Version": "20220705",
     },
     body: JSON.stringify(body),
     cache: "no-store",
+    signal: AbortSignal.timeout(osuApiTimeoutMs()),
   });
   if (response.status === 401 && retry) {
     await accessToken(input, true);

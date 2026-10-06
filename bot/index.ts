@@ -37,6 +37,7 @@ import { reportInteractionError } from "./interaction-errors";
 import { handleHelpSelect, isHelpSelect } from "./help-guide";
 import { nonOverlappingTask } from "./non-overlapping-task";
 import { startBackgroundTask } from "./background-task";
+import { runSupervisedWorker } from "./supervised-worker";
 import { dispatchScheduledGuildReports } from "../src/services/guild-reports";
 import { startConsoleForwarder } from "./console-forwarder";
 import {
@@ -172,14 +173,14 @@ client.once(Events.ClientReady, (readyClient) => {
   }
   // Stored scores can be delivered even if the osu! API is unavailable.
   startBackgroundTask(
-    () => runScoreNotificationWorker(pollController.signal),
+    () => runSupervisedWorker("score notifications", runScoreNotificationWorker, pollController.signal),
     (error) => console.error("[osu] notification worker stopped:", error),
   );
   if (process.env.OSU_CLIENT_ID && process.env.OSU_CLIENT_SECRET) {
     void reconcileAccountGuilds(client)
       .catch((error) => console.error("[osu] guild link reconciliation failed:", error));
     startBackgroundTask(
-      () => runOsuPoller(pollController.signal),
+      () => runSupervisedWorker("osu poller", runOsuPoller, pollController.signal),
       (error) => console.error("[osu] poller stopped:", error),
     );
   } else {

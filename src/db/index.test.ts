@@ -6,6 +6,7 @@ import {
   databaseResultRows,
   isLocalDatabaseUrl,
   localDatabasePoolSize,
+  localDatabaseTimeouts,
   isTransientDatabaseError,
   withDatabaseRetry,
 } from "./index";
@@ -30,6 +31,14 @@ describe("database drivers", () => {
   it("normalizes execute rows from both Neon and postgres-js", () => {
     expect(databaseResultRows<{ ok: number }>({ rows: [{ ok: 1 }] })).toEqual([{ ok: 1 }]);
     expect(databaseResultRows<{ ok: number }>([{ ok: 1 }])).toEqual([{ ok: 1 }]);
+  });
+
+  it("bounds query and lock waits without allowing an unlimited timeout", () => {
+    expect(localDatabaseTimeouts("", "")).toEqual({ statement_timeout: 60_000, lock_timeout: 5_000 });
+    expect(localDatabaseTimeouts("broken", "Infinity")).toEqual({ statement_timeout: 60_000, lock_timeout: 5_000 });
+    expect(localDatabaseTimeouts("0", "0")).toEqual({ statement_timeout: 5_000, lock_timeout: 1_000 });
+    expect(localDatabaseTimeouts("900000", "120000")).toEqual({ statement_timeout: 300_000, lock_timeout: 60_000 });
+    expect(localDatabaseTimeouts("7000.9", "10000")).toEqual({ statement_timeout: 7_000, lock_timeout: 7_000 });
   });
 });
 

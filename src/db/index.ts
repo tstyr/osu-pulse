@@ -27,6 +27,20 @@ export function localDatabasePoolSize(value = process.env.LOCAL_DATABASE_POOL_SI
   return Number.isFinite(parsed) ? Math.max(1, Math.min(20, Math.floor(parsed))) : 5;
 }
 
+function boundedTimeout(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = value?.trim() ? Number(value) : fallback;
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
+}
+
+export function localDatabaseTimeouts(
+  statementValue = process.env.LOCAL_DATABASE_STATEMENT_TIMEOUT_MS,
+  lockValue = process.env.LOCAL_DATABASE_LOCK_TIMEOUT_MS,
+) {
+  const statement_timeout = boundedTimeout(statementValue, 60_000, 5_000, 300_000);
+  const lock_timeout = Math.min(statement_timeout, boundedTimeout(lockValue, 5_000, 1_000, 60_000));
+  return { statement_timeout, lock_timeout };
+}
+
 function createDb(): AppDatabase {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -39,6 +53,9 @@ function createDb(): AppDatabase {
       connect_timeout: 10,
       idle_timeout: 30,
       prepare: false,
+      // Cancel queries at the server instead of abandoning a still-running
+      // Promise. Workers can then retry without overlapping the old query.
+      connection: localDatabaseTimeouts(),
     });
     // The application uses the common Drizzle relational/query API. Keeping a
     // single exported type avoids spreading a driver union through repositories.
