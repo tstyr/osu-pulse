@@ -14,6 +14,25 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { BotMetricValues } from "../lib/bot-statistics";
+
+export const botTelemetrySamples = pgTable(
+  "bot_telemetry_samples",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    scope: text("scope").notNull(),
+    scopeLabel: text("scope_label").notNull(),
+    sessionId: text("session_id").notNull(),
+    sampledAt: timestamp("sampled_at", { withTimezone: true }).notNull().defaultNow(),
+    intervalSeconds: doublePrecision("interval_seconds").notNull(),
+    metrics: jsonb("metrics").$type<BotMetricValues>().notNull().default({}),
+  },
+  (table) => [
+    uniqueIndex("bot_telemetry_sample_identity_idx").on(table.scope, table.sessionId, table.sampledAt),
+    index("bot_telemetry_scope_time_idx").on(table.scope, table.sampledAt),
+    index("bot_telemetry_time_idx").on(table.sampledAt),
+  ],
+);
 
 export const osuModeEnum = pgEnum("osu_mode", [
   "osu",
@@ -1151,6 +1170,7 @@ export const controlPanelLoginAttempts = pgTable("control_panel_login_attempts",
 });
 
 export type Account = typeof accounts.$inferSelect;
+export type BotTelemetrySample = typeof botTelemetrySamples.$inferSelect;
 export type DiscordAccountLink = typeof discordAccountLinks.$inferSelect;
 export type ManuallyTrackedAccount = typeof manuallyTrackedAccounts.$inferSelect;
 export type GuildSettings = typeof guildSettings.$inferSelect;

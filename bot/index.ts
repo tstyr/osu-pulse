@@ -38,6 +38,7 @@ import { handleHelpSelect, isHelpSelect } from "./help-guide";
 import { nonOverlappingTask } from "./non-overlapping-task";
 import { startBackgroundTask } from "./background-task";
 import { runSupervisedWorker } from "./supervised-worker";
+import { startBotTelemetry, type BotTelemetryHandle } from "./telemetry";
 import { dispatchScheduledGuildReports } from "../src/services/guild-reports";
 import { startConsoleForwarder } from "./console-forwarder";
 import {
@@ -105,6 +106,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel, Partials.Message],
 });
+let telemetry: BotTelemetryHandle | undefined;
+try { telemetry = startBotTelemetry(client); }
+catch (error) { console.error("[telemetry] initialization failed; Bot workers remain available:", error); }
 const stopConsoleForwarder = startConsoleForwarder();
 const lavalink = createLavalinkManager(client);
 const pollController = new AbortController();
@@ -328,6 +332,7 @@ async function shutdown(signal: string, exitCode = 0) {
   stopServiceControlDispatcher();
   destroyMusicPanels();
   stopStatusUpdater?.();
+  await telemetry?.stop();
   await client.destroy();
   await closeDatabase();
   releaseRuntimeLock();

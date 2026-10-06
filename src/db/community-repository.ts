@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 
 import { getDb } from "./index";
 import {
@@ -170,22 +170,34 @@ export async function recordGuildActivity(input: {
 }) {
   const bucketHour = hourBucket(input.occurredAt);
   const db = getDb();
-  const current = await db.query.discordActivityBuckets.findFirst({
-    where: and(eq(discordActivityBuckets.guildId, input.guildId), eq(discordActivityBuckets.bucketHour, bucketHour)),
-  });
-  const users = [...new Set([...(current?.activeDiscordUserIds ?? []), input.discordUserId])].slice(-5_000);
   const values = {
     guildId: input.guildId,
     bucketHour,
-    messageCount: (current?.messageCount ?? 0) + (input.kind === "message" ? 1 : 0),
-    voiceJoinCount: (current?.voiceJoinCount ?? 0) + (input.kind === "voice-join" ? 1 : 0),
-    voiceLeaveCount: (current?.voiceLeaveCount ?? 0) + (input.kind === "voice-leave" ? 1 : 0),
-    activeDiscordUserIds: users,
+    messageCount: input.kind === "message" ? 1 : 0,
+    voiceJoinCount: input.kind === "voice-join" ? 1 : 0,
+    voiceLeaveCount: input.kind === "voice-leave" ? 1 : 0,
+    activeDiscordUserIds: [input.discordUserId],
     updatedAt: new Date(),
   };
   await db.insert(discordActivityBuckets).values(values).onConflictDoUpdate({
     target: [discordActivityBuckets.guildId, discordActivityBuckets.bucketHour],
-    set: values,
+    // Increment under PostgreSQL's conflict row lock: concurrent events must
+    // not overwrite each other's counts or active-user membership.
+    set: {
+      messageCount: sql`${discordActivityBuckets.messageCount} + ${values.messageCount}`,
+      voiceJoinCount: sql`${discordActivityBuckets.voiceJoinCount} + ${values.voiceJoinCount}`,
+      voiceLeaveCount: sql`${discordActivityBuckets.voiceLeaveCount} + ${values.voiceLeaveCount}`,
+      activeDiscordUserIds: sql`(
+        select coalesce(jsonb_agg(active_id), '[]'::jsonb) from (
+          select distinct active_id
+          from jsonb_array_elements_text(
+            ${discordActivityBuckets.activeDiscordUserIds} || excluded.active_discord_user_ids
+          ) as active_ids(active_id)
+          limit 5000
+        ) as merged_users
+      )`,
+      updatedAt: values.updatedAt,
+    },
   });
 }
 

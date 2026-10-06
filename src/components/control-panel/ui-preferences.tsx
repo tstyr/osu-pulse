@@ -106,15 +106,20 @@ export function PageScaleControls({ inverse = false }: { inverse?: boolean }) {
   </div>;
 }
 
+export function pageScaleSurfaceStyle(scale: UiScale, wideMode: boolean): CSSProperties {
+  const effectiveScale = wideMode ? 1 : scale;
+  return {
+    zoom: effectiveScale,
+    // CSS zoom already resolves percentage width in the scaled coordinate
+    // space. An inverse percentage compensates twice and overflows the page.
+    width: "100%",
+    minHeight: `${100 / effectiveScale}vh`,
+  };
+}
+
 export function PageScaleSurface({ children, className = "" }: { children: ReactNode; className?: string }) {
   const { scale, wideMode } = useUiPreferences();
-  const effectiveScale = wideMode ? 1 : scale;
-  const style = {
-    zoom: effectiveScale,
-    width: `${100 / effectiveScale}%`,
-    minHeight: `${100 / effectiveScale}vh`,
-  } as CSSProperties;
-  return <div className={className} style={style}>{children}</div>;
+  return <div className={className} style={pageScaleSurfaceStyle(scale, wideMode)}>{children}</div>;
 }
 
 export function ServiceWorkerRegistrar() {

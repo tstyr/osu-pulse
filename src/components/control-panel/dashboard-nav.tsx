@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, BarChart3, BookOpen, ChartNoAxesCombined, Clapperboard, Command, Database, ListMusic, RadioTower, Settings2, Swords, Video } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Bot, ChartNoAxesCombined, Clapperboard, Command, Database, ListMusic, RadioTower, Settings2, Swords, Video } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUiPreferences } from "@/components/control-panel/ui-preferences";
@@ -9,6 +9,7 @@ const items = [
   { href: "/dashboard", label: { ja: "概要", en: "Overview" }, icon: BarChart3 },
   { href: "/dashboard/command-center", label: { ja: "司令画面", en: "Command" }, icon: Command },
   { href: "/dashboard/statistics", label: { ja: "プレイヤー統計", en: "Player stats" }, icon: ChartNoAxesCombined },
+  { href: "/dashboard/bot-statistics", label: { ja: "Bot統計", en: "Bot stats" }, icon: Bot },
   { href: "/compare", label: { ja: "VS比較", en: "Versus" }, icon: Swords },
   { href: "/dashboard/render", label: { ja: "レンダー", en: "Render" }, icon: Clapperboard },
   { href: "/dashboard/videos", label: { ja: "動画", en: "Videos" }, icon: Video },
