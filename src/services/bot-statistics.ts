@@ -1,5 +1,7 @@
 import { getBotHistoricalAggregate, getBotStatisticsExtent, getBotTelemetryAggregate, botStatisticsGuildId } from "../db/bot-telemetry-repository";
 import { BOT_STATISTICS_RANGES, type BotStatisticsData, type BotStatisticsRange } from "../lib/bot-statistics";
+import { getBotDimensions } from "../db/bot-dimensions-repository";
+import { getBotInsights } from "./bot-insights";
 
 const DAY_MS = 86_400_000;
 const JST_OFFSET_MS = 9 * 3_600_000;
@@ -37,13 +39,18 @@ async function buildBotStatistics(range: BotStatisticsRange, scope: string): Pro
     getBotTelemetryAggregate(scope, from, to, bucketSeconds), getBotHistoricalAggregate(scope, from, to, Math.max(86_400, bucketSeconds)),
   ]);
   const observedSeconds = Math.min(periodSeconds, Math.max(0, telemetry.observedSeconds));
+  const [insights, dimensions] = await Promise.all([
+    getBotInsights({ range, scope, from, to, summary: telemetry.summary, points: telemetry.points,
+      coverage: { sampleCount: telemetry.sampleCount, observedSeconds } }).catch(() => undefined),
+    getBotDimensions(scope, from, to).catch(() => undefined),
+  ]);
   const lastSampleAt = iso(extent.lastSampleAt);
   const scopes = extent.scopes.some((item) => item.id === "global") ? extent.scopes : [{ id: "global", label: "Bot全体" }, ...extent.scopes];
   return {
     range, scope, generatedAt: now.toISOString(), from: from.toISOString(), to: to.toISOString(),
     collectionStartedAt: iso(extent.firstSampleAt), lastSampleAt,
     stale: !lastSampleAt || now.getTime() - Date.parse(lastSampleAt) > 180_000,
-    bucketSeconds, scopes, summary: telemetry.summary,
+    bucketSeconds, scopes, summary: telemetry.summary, insights, dimensions,
     points: telemetry.points.map((point) => ({ ...point, at: iso(point.at) ?? point.at })),
     coverage: { sampleCount: telemetry.sampleCount, observedSeconds, periodSeconds, percent: periodSeconds > 0 ? observedSeconds / periodSeconds * 100 : 0 },
     ...historical,

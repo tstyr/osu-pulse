@@ -7,6 +7,8 @@ import { getDb } from "../src/db";
 import { getBotTelemetryContext, insertBotTelemetrySamples } from "../src/db/bot-telemetry-repository";
 import { BOT_STATISTIC_METRICS, type BotMetricKey, type BotMetricValues, type BotTelemetryInput } from "../src/lib/bot-statistics";
 import { startNetworkTelemetry, type NetworkTotals } from "./network-telemetry";
+import { startCommandTelemetry } from "./command-telemetry";
+import { BOT_NETWORK_SERVICES, mergeBotDimensions, type BotTelemetryDimensions } from "../src/lib/bot-dimensions";
 
 const SAMPLE_INTERVAL_MS = 60_000;
 const ACTIVE_WINDOW_MS = 15 * 60_000;
@@ -189,7 +191,8 @@ export function compactBotTelemetryQueue(queue: BotTelemetryInput[][], maximum =
           ? left == null && right == null ? null : (left ?? 0) + (right ?? 0)
           : null;
       }
-      return { ...(after ?? before!), sampledAt: end, intervalSeconds: (before?.intervalSeconds ?? 0) + (after?.intervalSeconds ?? 0), metrics };
+      return { ...(after ?? before!), sampledAt: end, intervalSeconds: (before?.intervalSeconds ?? 0) + (after?.intervalSeconds ?? 0), metrics,
+        dimensions: before?.dimensions || after?.dimensions ? mergeBotDimensions(before?.dimensions, after?.dimensions) : undefined };
     });
     queue.splice(1, 2, merged);
     compacted = true;
@@ -201,12 +204,14 @@ export function compactBotTelemetryQueue(queue: BotTelemetryInput[][], maximum =
 export function startBotTelemetry(client: Client): BotTelemetryHandle {
   const sessionId = randomUUID();
   const network = startNetworkTelemetry();
+  const commandTracker = startCommandTelemetry();
   const loop = monitorEventLoopDelay({ resolution: 20 });
   loop.enable();
   const tracker = new BotActivityTracker(performance.now());
   let observedAt = performance.now();
   let observedActivity = tracker.snapshot(observedAt);
   let observedNetwork: NetworkTotals = network.snapshot();
+  let observedServices: BotTelemetryDimensions["services"] = network.servicesSnapshot?.() ?? {};
   let observedCpu = process.cpuUsage();
   let lastSampleMs = Date.now() - 1;
   let stopped = false;
@@ -278,6 +283,7 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
     const currentActivity = tracker.snapshot(now);
     const community = tracker.community(now);
     const currentNetwork = network.snapshot();
+    const currentServices = network.servicesSnapshot?.() ?? {};
     const currentCpu = process.cpuUsage();
     const intervalSeconds = Math.max(0.001, (now - observedAt) / 1_000);
     const networkDelta = difference(currentNetwork, observedNetwork);
@@ -297,7 +303,13 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
       memoryBytes: process.memoryUsage().rss,
       eventLoopLagMs: validNumber(loop.mean / 1_000_000),
     };
-    const inputs: BotTelemetryInput[] = [{ scope: "global", scopeLabel: "Bot全体", sessionId, sampledAt, intervalSeconds, metrics: globalMetrics }];
+    const serviceDeltas: BotTelemetryDimensions["services"] = {};
+    for (const service of BOT_NETWORK_SERVICES) {
+      if (currentServices[service]) serviceDeltas[service] = difference(currentServices[service], observedServices[service] ?? { receivedBytes: 0, sentBytes: 0 });
+    }
+    const commandSnapshot = commandTracker.drain();
+    const inputs: BotTelemetryInput[] = [{ scope: "global", scopeLabel: "Bot全体", sessionId, sampledAt, intervalSeconds, metrics: globalMetrics,
+      dimensions: { commands: commandSnapshot.global, services: serviceDeltas } }];
     for (const [id, totals] of currentActivity.guilds) {
       inputs.push({
         scope: `guild:${id}`, scopeLabel: tracker.guilds.get(id)!.label, sessionId, sampledAt, intervalSeconds,
@@ -307,12 +319,14 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
           memberCount: memberById.get(id) ?? null,
           gatewayPingMs: connected ? validNumber(client.guilds.cache.get(id)?.shard.ping) : null,
         },
+        dimensions: { commands: commandSnapshot.guilds.get(id) ?? {}, services: {} },
       });
     }
     queue.push(inputs);
     observedAt = now;
     observedActivity = currentActivity;
     observedNetwork = currentNetwork;
+    observedServices = currentServices;
     observedCpu = currentCpu;
     loop.reset();
     if (compactBotTelemetryQueue(queue) && !compressionWarning) {
@@ -393,7 +407,7 @@ export function startBotTelemetry(client: Client): BotTelemetryHandle {
         } finally {
           if (deadline) clearTimeout(deadline);
           stopped = true;
-          network.stop(); loop.disable(); memberCache.clear();
+          network.stop(); commandTracker.stop(); loop.disable(); memberCache.clear();
         }
       })();
       return stopPromise;

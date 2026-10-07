@@ -282,4 +282,16 @@ describe("bounded Bot telemetry backlog", () => {
     expect(queue.flat().reduce((total, input) => total + (input.metrics.commandCount ?? 0), 0)).toBe(500);
     expect(queue.flat().reduce((total, input) => total + input.intervalSeconds, 0)).toBe(30_000);
   });
+  it("retains command/service sums and maxima without rewriting the uncertain head", () => {
+    const a = sample(1, {}), b = sample(2, {}), c = sample(3, {}), d = sample(4, {});
+    for (const [index, batch] of [a, b, c, d].entries()) batch[0].dimensions = {
+      commands: { ping: { attempts: 1, failures: index === 2 ? 1 : 0, completed: 1, durationMsTotal: (index + 1) * 10, durationMsMax: (index + 1) * 10, acknowledged: 1, ackMsTotal: index + 1, ackMsMax: index + 1 } },
+      services: { discord: { receivedBytes: (index + 1) * 100, sentBytes: index + 1 } },
+    };
+    const originalHead = JSON.stringify(a); const queue = [a, b, c, d];
+    compactBotTelemetryQueue(queue, 3);
+    expect(JSON.stringify(a)).toBe(originalHead);
+    expect(queue[1][0].dimensions?.commands.ping).toMatchObject({ attempts: 2, failures: 1, durationMsTotal: 50, durationMsMax: 30, ackMsMax: 3 });
+    expect(queue[1][0].dimensions?.services.discord).toEqual({ receivedBytes: 500, sentBytes: 5 });
+  });
 });

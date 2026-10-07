@@ -3,6 +3,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { MessageFlags, type Interaction, type InteractionReplyOptions, type RepliableInteraction } from "discord.js";
 import { recordBotError } from "../src/db/feature-repository";
+import { markBotCommandFailed } from "./command-telemetry";
 
 export function interactionErrorMessage(error: unknown) {
   const code = typeof error === "object" && error !== null && "code" in error ? Number(error.code) : 0;
@@ -38,6 +39,7 @@ export async function sendInteractionError(interaction: RepliableInteraction, co
 }
 
 export async function reportInteractionError(interaction: Interaction, error: unknown) {
+  markBotCommandFailed(interaction);
   const traceId = randomBytes(5).toString("hex").toUpperCase();
   console.error(`[interaction:${traceId}] failed:`, error);
   const logDirectory = resolve(process.cwd(), "work");

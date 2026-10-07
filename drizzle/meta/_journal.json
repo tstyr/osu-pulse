@@ -183,6 +183,13 @@
       "when": 1791298328578,
       "tag": "0025_bot_telemetry",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791313920000,
+      "tag": "0026_bot_dimensions",
+      "breakpoints": true
     }
   ]
 }

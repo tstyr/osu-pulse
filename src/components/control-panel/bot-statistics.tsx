@@ -2,11 +2,13 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Activity, ArrowDownToLine, ArrowUpFromLine, Bot, Database, HardDrive, RefreshCw, Users } from "lucide-react";
+import { Activity, Bot, Database, RefreshCw, Users } from "lucide-react";
 import { Bar, BarChart, Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { BOT_STATISTIC_METRICS, type BotMetricKey, type BotStatisticsData, type BotStatisticsRange } from "@/lib/bot-statistics";
 import { liveRequestOptions, requestJson } from "@/lib/client/request-json";
 import { RefreshNotice } from "./refresh-notice";
+import { BotSummaryCards } from "./bot-summary-cards";
+import { BotInsightsPanel } from "./bot-insights-panel";
 import { botMetricIsGlobalOnly, botSeriesOpacity, botStatisticsScopeLabel, botTabNavigationIndex, formatBotAxisDate, formatBotAxisValue, formatBotDate, formatBotValue, matchingBotStatistics } from "./bot-statistics-presentation";
 
 const ranges: Array<{ id: BotStatisticsRange; label: string }> = [
@@ -149,20 +151,8 @@ export function BotStatistics() {
         <p>このサーバーの人数・VC・Discord活動・関連プレイヤーと、接続ShardのPingを表示しています。通信量・処理・PC/DB容量はBot全体で確認できます。</p>
         <button type="button" onClick={() => setScope("global")} className="shrink-0 font-semibold underline underline-offset-2">Bot全体を見る</button>
       </div> : null}
-      <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {scope === "global" ? <>
-          <SummaryCard label="期間のBot TCP受信量" metric="receivedBytes" value={summary?.receivedBytes?.total} detail={`観測日平均 ${formatBotValue("receivedBytes", summary?.receivedBytes?.average)}`} icon={ArrowDownToLine} />
-          <SummaryCard label="期間のBot TCP送信量" metric="sentBytes" value={summary?.sentBytes?.total} detail={`観測日平均 ${formatBotValue("sentBytes", summary?.sentBytes?.average)}`} icon={ArrowUpFromLine} />
-        </> : null}
-        <SummaryCard label={scope === "global" ? "Gateway Ping" : "Gateway Ping（接続Shard）"} metric="gatewayPingMs" value={summary?.gatewayPingMs?.latest} detail={`観測平均 ${formatBotValue("gatewayPingMs", summary?.gatewayPingMs?.average)}`} icon={Activity} />
-        <SummaryCard label="VC接続人数" metric="voiceMembers" value={summary?.voiceMembers?.latest} detail={`延べ接続 ${formatBotValue("voiceMemberSeconds", summary?.voiceMemberSeconds?.total)}`} icon={Users} />
-        <SummaryCard label="osu!アクティブ人数" metric="osuActivePlayers" value={summary?.osuActivePlayers?.latest} detail="DB保存リザルトの直近30分で判定" icon={Users} />
-        <SummaryCard label="受信メッセージ" metric="messageCount" value={summary?.messageCount?.total} detail={`観測日平均 ${formatBotValue("messageCount", summary?.messageCount?.average)}`} icon={Activity} />
-        {scope === "global" ? <>
-          <SummaryCard label="DB使用容量" metric="dbBytes" value={summary?.dbBytes?.latest} detail={`行数 ${formatBotValue("dbRows", summary?.dbRows?.latest)}（概算）`} icon={Database} />
-          <SummaryCard label="PCディスク使用量" metric="diskUsedBytes" value={summary?.diskUsedBytes?.latest} detail={`総容量 ${formatBotValue("diskTotalBytes", summary?.diskTotalBytes?.latest)}`} icon={HardDrive} />
-        </> : null}
-      </section>
+      <BotSummaryCards data={data} />
+      <BotInsightsPanel data={data} />
       <div className="mt-5 flex gap-1 overflow-x-auto rounded-md border bg-white p-1" role="tablist" aria-label="Bot統計の種類">
         {tabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`bot-tab-${item.id}`} aria-controls="bot-metric-panel" aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={(event) => {
           const next = botTabNavigationIndex(index, event.key, tabs.length);

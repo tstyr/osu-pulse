@@ -4,6 +4,7 @@ import { databaseResultRows, getDb } from "./index";
 import { botTelemetrySamples } from "./schema";
 import { cachedAsync } from "../lib/async-cache";
 import { BOT_STATISTIC_METRICS, type BotMetricKey, type BotMetricValues, type BotStatisticsData, type BotTelemetryInput } from "../lib/bot-statistics";
+import { sanitizeBotDimensions } from "../lib/bot-dimensions";
 
 const CAPACITY_CACHE_MS = 5 * 60_000;
 const CONTEXT_KEYS: BotMetricKey[] = ["osuActivePlayers", "trackedPlayers", "storedScores", "uniqueBeatmaps", "osuLifetimePlayCount", "osuLifetimePlaySeconds", "notificationPending", "notificationFailed"];
@@ -35,6 +36,7 @@ export async function insertBotTelemetrySamples(input: BotTelemetryInput[]) {
       ...sample,
       scopeLabel: sample.scopeLabel.trim().slice(0, 150) || sample.scope,
       metrics: sanitizeBotMetricValues(sample.metrics),
+      dimensions: sample.dimensions ? sanitizeBotDimensions(sample.dimensions) : undefined,
     });
   }
   const values = [...unique.values()];

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ extent: vi.fn(), telemetry: vi.fn(), historical: vi.fn() }));
+const mocks = vi.hoisted(() => ({ extent: vi.fn(), telemetry: vi.fn(), historical: vi.fn(), insights: vi.fn(), dimensions: vi.fn() }));
+vi.mock("./bot-insights", () => ({ getBotInsights: mocks.insights }));
+vi.mock("../db/bot-dimensions-repository", () => ({ getBotDimensions: mocks.dimensions }));
 vi.mock("../db/bot-telemetry-repository", () => ({
   botStatisticsGuildId: (scope: string) => { if (scope !== "global" && !/^guild:\d{17,20}$/.test(scope)) throw new Error("Invalid scope"); return scope === "global" ? null : scope.slice(6); },
   getBotStatisticsExtent: mocks.extent, getBotTelemetryAggregate: mocks.telemetry, getBotHistoricalAggregate: mocks.historical,
@@ -12,6 +14,8 @@ beforeEach(() => {
   mocks.extent.mockResolvedValue({ firstSampleAt: null, lastSampleAt: null, historyStartedAt: null, scopes: [] });
   mocks.telemetry.mockResolvedValue({ summary: {}, points: [], sampleCount: 0, observedSeconds: 0 });
   mocks.historical.mockResolvedValue({ activityHours: [], modeBreakdown: [], historical: [], historicalTotals: { messages: 0, plays: 0, uniqueBeatmaps: 0, activePlayers: 0, playTimeSeconds: 0, days: 0 } });
+  mocks.insights.mockResolvedValue(undefined);
+  mocks.dimensions.mockResolvedValue({ commands: [], services: [], sampleCount: 0, collectionStartedAt: null });
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -34,6 +38,16 @@ describe("Bot statistics periods", () => {
 });
 
 describe("Bot statistics responses", () => {
+  it("passes coverage into insights and preserves the core dashboard when an additional analysis fails", async () => {
+    const { getBotStatistics } = await import("./bot-statistics");
+    mocks.insights.mockRejectedValue(new Error("temporary additional analysis failure"));
+    mocks.dimensions.mockRejectedValue(new Error("temporary dimension failure"));
+    const data = await getBotStatistics({ range: "today", scope: "global" });
+    expect(data.summary).toEqual({});
+    expect(data.insights).toBeUndefined();
+    expect(data.dimensions).toBeUndefined();
+    expect(mocks.insights).toHaveBeenCalledWith(expect.objectContaining({ range: "today", scope: "global", coverage: { sampleCount: 0, observedSeconds: 0 } }));
+  });
   it("keeps uncollected data unknown and distinguishes stale collection from empty history", async () => {
     const { getBotStatistics } = await import("./bot-statistics");
     mocks.telemetry.mockResolvedValue({ summary: { dbPingMs: { latest: null, average: null, minimum: null, maximum: null, total: null } }, points: [{ at: now.toISOString(), values: { dbPingMs: null } }], sampleCount: 0, observedSeconds: 0 });

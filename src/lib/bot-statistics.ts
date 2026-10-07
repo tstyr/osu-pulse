@@ -1,3 +1,6 @@
+import type { BotDimensions, BotTelemetryDimensions } from "./bot-dimensions";
+import type { BotInsights } from "./bot-insights";
+
 export const BOT_STATISTICS_RANGES = ["today", "week", "month", "all"] as const;
 export type BotStatisticsRange = typeof BOT_STATISTICS_RANGES[number];
 
@@ -52,6 +55,7 @@ export type BotTelemetryInput = {
   sampledAt: Date;
   intervalSeconds: number;
   metrics: BotMetricValues;
+  dimensions?: BotTelemetryDimensions;
 };
 export type BotMetricSummary = {
   latest: number | null;
@@ -61,6 +65,8 @@ export type BotMetricSummary = {
   total: number | null;
 };
 export type BotStatisticsData = {
+  insights?: BotInsights;
+  dimensions?: BotDimensions;
   range: BotStatisticsRange;
   scope: string;
   generatedAt: string;

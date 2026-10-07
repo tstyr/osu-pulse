@@ -34,6 +34,7 @@ import {
 import { startServerStatusUpdater } from "./server-status";
 import { announceBotUpdate } from "./release-notifier";
 import { reportInteractionError } from "./interaction-errors";
+import { measureBotCommand } from "./command-telemetry";
 import { handleHelpSelect, isHelpSelect } from "./help-guide";
 import { nonOverlappingTask } from "./non-overlapping-task";
 import { startBackgroundTask } from "./background-task";
@@ -57,6 +58,7 @@ import { auditAdminAction } from "../src/services/admin-log";
 import { reconcileAccountGuilds } from "./account-guild-reconciler";
 import { runScoreNotificationWorker } from "../src/services/score-notification-delivery";
 import { closeDatabase } from "../src/db";
+import { startBotWeeklyReports, type BotWeeklyReportHandle } from "./bot-weekly-report";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is required");
@@ -117,6 +119,7 @@ let reminderTimer: ReturnType<typeof setInterval> | undefined;
 let reportTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let stopStatusUpdater: (() => void) | undefined;
+let botWeeklyReports: BotWeeklyReportHandle | undefined;
 const stopServiceControlDispatcher = startServiceControlDispatcher();
 
 function writeRuntimeHeartbeat() {
@@ -191,6 +194,7 @@ client.once(Events.ClientReady, (readyClient) => {
     console.warn("[osu] poller disabled: OSU_CLIENT_ID / OSU_CLIENT_SECRET missing");
   }
   stopStatusUpdater = startServerStatusUpdater(client);
+  botWeeklyReports = startBotWeeklyReports(client);
   void announceBotUpdate(client).catch((error) => console.error("[updates] startup announcement failed:", error));
 
   const reminders = nonOverlappingTask(dispatchDueReminders, (error) => console.error("[reminder] dispatcher failed:", error));
@@ -246,7 +250,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
     if (interaction.isChatInputCommand()) {
-      await handleCommand(interaction, { client, lavalink });
+      await measureBotCommand(interaction, () => handleCommand(interaction, { client, lavalink }));
     }
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === "osu!リザルトをレンダリング") {
       await handleRenderMessageCommand(interaction);
@@ -333,6 +337,7 @@ async function shutdown(signal: string, exitCode = 0) {
   destroyMusicPanels();
   stopStatusUpdater?.();
   await telemetry?.stop();
+  await botWeeklyReports?.stop();
   await client.destroy();
   await closeDatabase();
   releaseRuntimeLock();

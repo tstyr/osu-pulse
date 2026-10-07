@@ -2,7 +2,7 @@ import { EventEmitter, once } from "node:events";
 import { createConnection, createServer, Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isLoopbackAddress, NetworkByteTracker, startNetworkTelemetry } from "./network-telemetry";
+import { classifyNetworkService, isLoopbackAddress, NetworkByteTracker, startNetworkTelemetry } from "./network-telemetry";
 
 class FakeSocket extends EventEmitter {
   bytesRead = 0;
@@ -10,9 +10,31 @@ class FakeSocket extends EventEmitter {
   remoteAddress: string | undefined;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("Bot socket network measurement", () => {
+  it("classifies only fixed services without returning hosts, URLs or credentials", () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://name:secret@127.0.0.1:54329/private");
+    expect(classifyNetworkService("localhost", 54329, "::1")).toBe("db");
+    expect(classifyNetworkService("discord.com", 443)).toBe("discord");
+    expect(classifyNetworkService("gateway.discord.gg", 443)).toBe("discord");
+    expect(classifyNetworkService("osu.ppy.sh", 443)).toBe("osu");
+    expect(classifyNetworkService("r1.googlevideo.com", 443)).toBe("youtube");
+    expect(classifyNetworkService("discord.com.evil.example", 443)).toBe("other");
+    expect(classifyNetworkService("127.0.0.1", 2333)).toBe("local");
+  });
+
+  it("keeps service counters across socket closure without mutating past snapshots", () => {
+    const tracker = new NetworkByteTracker(); const socket = new FakeSocket(); socket.remoteAddress = "203.0.113.4";
+    tracker.track(socket, { host: "osu.ppy.sh", port: 443 });
+    socket.bytesRead = 20; socket.bytesWritten = 10;
+    const first = tracker.servicesSnapshot();
+    socket.bytesRead = 50; socket.bytesWritten = 30; socket.emit("close");
+    expect(first.osu).toEqual({ receivedBytes: 20, sentBytes: 10 });
+    expect(tracker.servicesSnapshot().osu).toEqual({ receivedBytes: 50, sentBytes: 30 });
+    expect(JSON.stringify(tracker.servicesSnapshot())).not.toContain("ppy.sh");
+    tracker.stop();
+  });
   it.each(["127.0.0.1", "127.1.2.3", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::ffff:7f00:1"])("recognizes loopback %s", (address) => {
     expect(isLoopbackAddress(address)).toBe(true);
   });

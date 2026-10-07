@@ -15,6 +15,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { BotMetricValues } from "../lib/bot-statistics";
+import type { BotTelemetryDimensions } from "../lib/bot-dimensions";
 
 export const botTelemetrySamples = pgTable(
   "bot_telemetry_samples",
@@ -26,6 +27,8 @@ export const botTelemetrySamples = pgTable(
     sampledAt: timestamp("sampled_at", { withTimezone: true }).notNull().defaultNow(),
     intervalSeconds: doublePrecision("interval_seconds").notNull(),
     metrics: jsonb("metrics").$type<BotMetricValues>().notNull().default({}),
+    // An empty legacy object means dimensions were not collected, not zero use.
+    dimensions: jsonb("dimensions").$type<BotTelemetryDimensions>().notNull().default({} as BotTelemetryDimensions),
   },
   (table) => [
     uniqueIndex("bot_telemetry_sample_identity_idx").on(table.scope, table.sessionId, table.sampledAt),
