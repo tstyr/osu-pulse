@@ -33,7 +33,10 @@ async function main() {
     } while (after);
     for (const guild of guilds) targets.push({ route: Routes.applicationGuildCommands(clientId!, guild.id), body: [] });
   }
-  const known = new Set([...legacyCommands.map((command) => command.name), "pulse"]);
+  // Only explicitly named, reviewed stale registrations may be retired.
+  const retire = process.argv.filter((argument) => argument.startsWith("--retire-command=")).map((argument) => argument.slice("--retire-command=".length));
+  if (retire.some((name) => !/^[a-z0-9_-]{1,32}$/.test(name))) throw new Error("Invalid retirement command name");
+  const known = new Set([...legacyCommands.map((command) => command.name), "pulse", ...retire]);
   const snapshots = [];
   for (const target of targets) {
     const existing = await rest.get(target.route) as Array<{ name: string; type?: number; [key: string]: unknown }>;

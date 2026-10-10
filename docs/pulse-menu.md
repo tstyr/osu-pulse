@@ -53,3 +53,7 @@ legacy guild overrides. Unknown command names abort the change. If any write
 fails, it attempts to restore every attempted target. Never paste the bot token
 or commit production env files. Global commands may require closing/reopening
 Discord's command picker to refresh.
+
+If inspection identifies a stale command absent from this codebase, obtain the
+owner's approval first, then use `--retire-command=exact-name` for that specific
+name. Do not bypass the unknown-command check or retire arbitrary names.
