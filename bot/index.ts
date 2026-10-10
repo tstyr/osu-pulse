@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 
 import { dispatchDueReminders } from "./automation";
 import { handleCommand } from "./handlers";
+import { handlePulseInteraction, initializePulseOperators, isPulseInteraction } from "./pulse-panel";
 import {
   handleFeedbackModal,
   handleUtilityButton,
@@ -165,6 +166,7 @@ process.once("exit", () => {
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`[discord] ready as ${readyClient.user.tag} in ${readyClient.guilds.cache.size} guild(s)`);
+  void initializePulseOperators(client).catch(() => console.error("[pulse] application owner lookup failed; operator menu remains restricted to explicit allowlist"));
 
   void warmRenderRecentPlayCache()
     .then((count) => console.log(`[render] warmed recent-play cache for ${count} Discord user(s)`))
@@ -223,6 +225,10 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   if (shuttingDown) return;
   try {
+    if (isPulseInteraction(interaction)) {
+      await handlePulseInteraction(interaction, { client, lavalink });
+      return;
+    }
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === "render") await handleRenderAutocomplete(interaction);
       return;

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { commands } from "./commands";
+import { legacyCommands } from "./commands";
 import { helpReply } from "./help-guide";
 
 it("lists every registered slash command in a guide within Discord limits", () => {
@@ -11,7 +11,7 @@ it("lists every registered slash command in a guide within Discord limits", () =
     expect(embed.fields!.length).toBeLessThanOrEqual(25);
     fields.push(...embed.fields!.map((field) => field.name));
   }
-  for (const command of commands.filter((command) => "description" in command)) {
-    expect(fields).toContain(`/${command.name}`);
+  for (const command of legacyCommands.filter((command) => "description" in command)) {
+    expect(fields).toContain(command.name);
   }
 });

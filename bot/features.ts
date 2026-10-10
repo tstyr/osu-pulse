@@ -49,7 +49,7 @@ function modeOption(interaction: ChatInputCommandInteraction, fallback: OsuMode)
 
 function utilityButtons() {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`${UTILITY_PREFIX}:help`).setLabel("ヘルプ").setEmoji("📖").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("pulse:open").setLabel("全機能メニュー").setEmoji("📖").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`${UTILITY_PREFIX}:health`).setLabel("システム状態").setEmoji("🩺").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${UTILITY_PREFIX}:goal`).setLabel("目標").setEmoji("🎯").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${UTILITY_PREFIX}:stats`).setLabel("統計").setEmoji("📊").setStyle(ButtonStyle.Secondary),
@@ -83,12 +83,12 @@ async function healthEmbed(manager: LavalinkManager | null) {
 
 async function goalEmbed(discordUserId: string, requestedMode?: OsuMode) {
   const account = await getAccountByDiscord(discordUserId);
-  if (!account) return new EmbedBuilder().setColor(0xf1c40f).setTitle("目標").setDescription("先に `/osu link` でアカウントを登録してください。");
+  if (!account) return new EmbedBuilder().setColor(0xf1c40f).setTitle("目標").setDescription("先に `/pulse` → osu! → アカウント登録を実行してください。");
   const mode = requestedMode ?? account.primaryMode;
   const [goal, snapshots] = await Promise.all([getUserGoal(discordUserId, mode), getLatestSnapshots(account.id)]);
   const latest = snapshots.find((row) => row.mode === mode);
   const embed = new EmbedBuilder().setColor(Number.parseInt(MODE_ACCENTS[mode].slice(1), 16)).setTitle(`🎯 ${account.username} · ${MODE_LABELS[mode]}`);
-  if (!goal) return embed.setDescription("目標はまだありません。`/goal set` でPPまたは世界順位を設定できます。");
+  if (!goal) return embed.setDescription("目標はまだありません。`/pulse` → osu! → 目標を設定からPPまたは世界順位を設定できます。");
   const lines = [];
   if (goal.targetPp !== null) {
     const current = latest?.pp ?? 0;
@@ -116,9 +116,9 @@ export async function handleUtilityButton(interaction: ButtonInteraction, manage
   if (action === "help") await interaction.reply({ ...helpReply(), flags: MessageFlags.Ephemeral });
   else if (action === "health" || action === "goal" || action === "render") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    await interaction.editReply({ embeds: [action === "goal" ? await goalEmbed(interaction.user.id) : await healthEmbed(manager)], content: action === "render" ? "開始は `/render`、進捗確認は `/render-status` を利用してください。" : undefined });
+    await interaction.editReply({ embeds: [action === "goal" ? await goalEmbed(interaction.user.id) : await healthEmbed(manager)], content: action === "render" ? "`/pulse` → レンダリングから開始・進捗確認できます。" : undefined });
   }
-  else if (action === "stats") await interaction.reply({ content: `📊 詳細統計: ${webUrl("/dashboard/statistics")}\nDiscord内では \`/stats\` を利用できます。`, flags: MessageFlags.Ephemeral });
+  else if (action === "stats") await interaction.reply({ content: `📊 詳細統計: ${webUrl("/dashboard/statistics")}\nDiscord内では \`/pulse\` → osu! → 統計から確認できます。`, flags: MessageFlags.Ephemeral });
 }
 
 export async function handleFeedbackModal(interaction: ModalSubmitInteraction) {

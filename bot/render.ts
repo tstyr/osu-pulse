@@ -162,9 +162,9 @@ async function fetchRenderableRecentPlays(
   };
 }
 
-async function getRenderableRecentPlays(discordUserId: string) {
+export async function getRenderableRecentPlays(discordUserId: string, forceRefresh = false) {
   const cached = recentPlayCache.get(discordUserId);
-  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.result;
 
   const existingRequest = recentPlayRequests.get(discordUserId);
   if (existingRequest) return existingRequest;

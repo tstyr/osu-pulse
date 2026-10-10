@@ -13,7 +13,8 @@ const modeChoices = [
   { name: "mania", value: "mania" },
 ] as const;
 
-export const commands = [
+// Kept as the single source of truth for the interactive menu's inputs.
+export const legacyCommands = [
   new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Botの応答速度と接続状態を確認"),
@@ -386,3 +387,8 @@ export const commands = [
     .setName("osu!リザルトをレンダリング")
     .setType(ApplicationCommandType.Message),
 ].map((command) => command.toJSON());
+
+export const commands = [
+  new SlashCommandBuilder().setName("pulse").setDescription("osu! Pulse の全機能・管理メニューを開く").toJSON(),
+  ...legacyCommands.filter((command) => command.type === ApplicationCommandType.Message),
+];
