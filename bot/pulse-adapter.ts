@@ -1,5 +1,12 @@
-import { MessageFlags, type ChatInputCommandInteraction, type ButtonInteraction } from "discord.js";
+import { MessageFlags, MessageFlagsBitField, type ChatInputCommandInteraction, type ButtonInteraction } from "discord.js";
 import type { PulseAction } from "./pulse-catalog";
+
+export function pulseResultIsPrivate(action: PulseAction) {
+  // Menus and secrets/personal records must not become public as a side effect
+  // of changing the visibility of ordinary score/music/analysis results.
+  return action.access === "operator" || ["help", "verify", "feedback", "health", "overlay", "export", "remind"].includes(action.root)
+    || action.root === "osu" && ["link", "unlink", "daily-dm"].includes(action.path[0]);
+}
 
 /** Reuse handlers with a fresh component response token. Never mutate the real interaction. */
 export function pulseCommandInteraction(interaction: ButtonInteraction, action: PulseAction, values: Record<string, unknown>) {
@@ -22,12 +29,12 @@ export function pulseCommandInteraction(interaction: ButtonInteraction, action: 
       if (Reflect.has(target, property)) return Reflect.get(target, property);
       const value = Reflect.get(interaction, property);
       if (property === "reply" || property === "deferReply") {
-        // Long-lived music/render panels must keep their existing visibility:
-        // their updaters use the normal bot message API, not an expiring token.
-        if (action.root === "music" || action.root.startsWith("render")) return value.bind(interaction);
         return (payload: unknown = {}) => {
           const normalized = typeof payload === "string" ? { content: payload } : payload as Record<string, unknown>;
-          return Reflect.apply(value, interaction, [{ ...normalized, flags: MessageFlags.Ephemeral }]);
+          const flags = new MessageFlagsBitField((normalized.flags ?? 0) as MessageFlagsBitField);
+          if (pulseResultIsPrivate(action)) flags.add(MessageFlags.Ephemeral);
+          else flags.remove(MessageFlags.Ephemeral);
+          return Reflect.apply(value, interaction, [{ ...normalized, flags: flags.bitfield }]);
         };
       }
       return typeof value === "function" ? value.bind(interaction) : value;

@@ -3,7 +3,7 @@ import { ApplicationCommandType, MessageFlags, PermissionFlagsBits, PermissionsB
 import { commands, legacyCommands } from "./commands";
 import { canUsePulseAction, flattenPulseCommands, pulseActions, validatePulseValue } from "./pulse-catalog";
 import { PulseSessionStore } from "./pulse-session";
-import { pulseCommandInteraction } from "./pulse-adapter";
+import { pulseCommandInteraction, pulseResultIsPrivate } from "./pulse-adapter";
 import { dailyPlays, deviation, firstMilestones, improvementCandidates, playSessions, type AnalysisPlay } from "./pulse-analysis";
 
 const mocks = vi.hoisted(() => ({ handle: vi.fn(async (...args: unknown[]) => { void args; }), analytics: vi.fn(async (...args: unknown[]) => { void args; }), recent: vi.fn(async (...args: unknown[]) => { void args; return { plays: [], accountCount: 0 }; }) }));
@@ -116,7 +116,7 @@ async function choose(actionId: string, permissions = BigInt(0)) {
   return selected;
 }
 describe("interactive menu flow", () => {
-  it("edits a text input and dispatches the real legacy function with private replies", async () => {
+  it("edits a text input and dispatches the real legacy function", async () => {
     const chosen = await choose("osu/link");
     const field = await dispatch(fake("string", component(chosen, "field"), ["username"], chosen.user.id));
     const modal = field.showModal.mock.calls[0][0] as { data: { custom_id: string } };
@@ -161,7 +161,7 @@ describe("interactive menu flow", () => {
     const action = pulseActions.find((item) => item.root === "ping")!;
     const adapted = pulseCommandInteraction(native as never, action, {});
     await adapted.reply("hello");
-    expect(native.reply.mock.calls[0][0]).toMatchObject({ content: "hello", flags: MessageFlags.Ephemeral });
+    expect(native.reply.mock.calls[0][0]).toMatchObject({ content: "hello", flags: 0 });
     expect(adapted.replied).toBe(true);
     expect(native.commandName).toBe("pulse");
   });
@@ -170,6 +170,28 @@ describe("interactive menu flow", () => {
     const action = pulseActions.find((item) => item.id === "music/play")!;
     const adapted = pulseCommandInteraction(native as never, action, {});
     await adapted.reply("playback");
-    expect(native.reply.mock.calls[0][0]).toBe("playback");
+    expect(native.reply.mock.calls[0][0]).toMatchObject({ content: "playback", flags: 0 });
+  });
+  it("makes normal results public even if an old handler requests ephemeral", async () => {
+    for (const actionId of ["ping", "osu/profile", "goal/status", "extra/stability", "music/play", "render"]) {
+      const action = pulseActions.find((item) => item.id === actionId)!;
+      expect(pulseResultIsPrivate(action)).toBe(false);
+      const native = fake("button");
+      const adapted = pulseCommandInteraction(native as never, action, {});
+      await adapted.reply({ content: "result", flags: MessageFlags.Ephemeral | MessageFlags.SuppressEmbeds });
+      expect(native.reply.mock.calls[0][0]).toMatchObject({ flags: MessageFlags.SuppressEmbeds });
+      await adapted.deferReply({ flags: MessageFlags.Ephemeral });
+      expect(native.deferReply.mock.calls.at(-1)).toEqual([{ flags: 0 }]);
+    }
+  });
+  it("keeps authentication, operator data, private exports and reminders private", async () => {
+    for (const actionId of ["osu/link", "extra/storage", "extra/workers", "overlay/setup", "export", "remind/list"]) {
+      const action = pulseActions.find((item) => item.id === actionId)!;
+      expect(pulseResultIsPrivate(action)).toBe(true);
+      const native = fake("button");
+      const adapted = pulseCommandInteraction(native as never, action, {});
+      await adapted.reply("private data");
+      expect(native.reply.mock.calls[0][0]).toMatchObject({ flags: MessageFlags.Ephemeral });
+    }
   });
 });

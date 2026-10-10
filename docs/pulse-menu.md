@@ -17,8 +17,11 @@ as separate slash commands.
 Menus are private, bound to user/guild/channel, and expire after one hour of
 inactivity. A revision nonce prevents old buttons from executing an operation
 twice. Restarted/expired panels offer an **open my menu** button. Music/render
-result controls retain their existing independent handlers and original
-visibility, so long-lived public playback/progress panels keep updating.
+result controls retain their existing independent handlers and channel-visible
+messages, so long-lived public playback/progress panels keep updating.
+Ordinary execution results (scores, growth, goals, rivals, analysis, music and
+rendering) are channel-visible. Authentication, feedback, health diagnostics,
+private exports/reminders, secret overlay URLs and operator reports stay private.
 
 ## Inputs
 
