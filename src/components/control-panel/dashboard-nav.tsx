@@ -1,9 +1,10 @@
 "use client";
 
-import { Activity, BarChart3, BookOpen, Bot, ChartNoAxesCombined, Clapperboard, Command, Database, ListMusic, RadioTower, Settings2, Swords, Video } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Bot, ChartNoAxesCombined, ChevronRight, Clapperboard, Command, Database, ListMusic, RadioTower, Settings2, Swords, Video } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUiPreferences } from "@/components/control-panel/ui-preferences";
+import styles from "./console.module.css";
 
 const items = [
   { href: "/dashboard", label: { ja: "概要", en: "Overview" }, icon: BarChart3 },
@@ -21,13 +22,37 @@ const items = [
   { href: "/dashboard/database", label: { ja: "データベース", en: "Database" }, icon: Database },
 ];
 
+const groups = [
+  { label: { ja: "ワークスペース", en: "Workspace" }, paths: ["/dashboard", "/dashboard/command-center", "/dashboard/commands"] },
+  { label: { ja: "分析", en: "Analytics" }, paths: ["/dashboard/statistics", "/dashboard/bot-statistics", "/compare", "/dashboard/performance"] },
+  { label: { ja: "メディア", en: "Media" }, paths: ["/dashboard/render", "/dashboard/videos", "/dashboard/music"] },
+  { label: { ja: "管理", en: "Administration" }, paths: ["/dashboard/operations", "/dashboard/database", "/dashboard/settings"] },
+];
+
+function matchesPath(href: string, pathname: string) {
+  return pathname === href || (href !== "/dashboard" && pathname.startsWith(`${href}/`));
+}
+
+export function DashboardBreadcrumb() {
+  const pathname = usePathname();
+  const { locale } = useUiPreferences();
+  const item = items.find((candidate) => matchesPath(candidate.href, pathname));
+  const group = groups.find((candidate) => item && candidate.paths.includes(item.href));
+  return <div className={styles.breadcrumb} aria-label={locale === "ja" ? "現在のページ" : "Current page"}>
+    <span>{group?.label[locale] ?? "osu! Pulse"}</span><ChevronRight aria-hidden="true" /><strong>{item?.label[locale] ?? (locale === "ja" ? "管理画面" : "Console")}</strong>
+  </div>;
+}
+
 export function DashboardNav() {
   const pathname = usePathname();
   const { locale } = useUiPreferences();
   return (
-    <nav className="flex gap-1 overflow-x-auto overscroll-contain lg:block lg:space-y-1">
-      {items.map((item) => {
-        const active = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href);
+    <nav className={styles.nav} aria-label={locale === "ja" ? "管理メニュー" : "Console navigation"}>
+      {groups.map((group) => <div key={group.label.en} className={styles.navGroup}>
+        <p className={styles.navHeading}>{group.label[locale]}</p>
+        {group.paths.map((path) => {
+        const item = items.find((candidate) => candidate.href === path)!;
+        const active = matchesPath(item.href, pathname);
         const Icon = item.icon;
         return (
           <Link
@@ -35,12 +60,12 @@ export function DashboardNav() {
             href={item.href}
             prefetch={false}
             aria-current={active ? "page" : undefined}
-            className={`flex min-w-16 shrink-0 flex-col items-center gap-1 rounded-md px-2 py-1.5 text-[9px] font-medium transition sm:min-w-20 lg:min-w-0 lg:flex-row lg:gap-2.5 lg:px-3 lg:py-2.5 lg:text-[13px] ${active ? "bg-[#eef4fc] text-[#0051c3]" : "text-[#596477] hover:bg-[#f3f5f7] hover:text-[#1d232d]"}`}
+            className={styles.navLink}
           >
-            <Icon className="size-4" /> {item.label[locale]}
+            <Icon aria-hidden="true" /> {item.label[locale]}
           </Link>
         );
-      })}
+      })}</div>)}
     </nav>
   );
 }

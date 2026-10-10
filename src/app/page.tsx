@@ -4,6 +4,7 @@ import { ControlLogo } from "@/components/control-panel/control-logo";
 import { LoginForm } from "@/components/control-panel/login-form";
 import { hasControlPanelSession } from "@/lib/control/auth";
 import { discordOAuthConfigured } from "@/lib/control/discord-oauth";
+import styles from "@/components/control-panel/console.module.css";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ oauth?: string }> }) {
   if (await hasControlPanelSession()) redirect("/dashboard");
@@ -16,18 +17,17 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         ? "Discord認証をキャンセルしました。"
         : null;
   return (
-    <main className="grid min-h-screen place-items-center px-4 py-10">
-      <section className="w-full max-w-[430px]">
-        <div className="mb-8 flex justify-center"><ControlLogo large /></div>
-        <div className="cp-panel overflow-hidden">
-          <div className="border-b border-[#e2e6ec] px-7 py-6">
-            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#f48120]">Private control plane</p>
-            <h1 className="mt-2 text-[23px] font-semibold tracking-[-0.025em]">管理コンソールへログイン</h1>
-            <p className="mt-2 text-sm leading-6 text-[#697386]">レンダー、YouTube、DB、ローカルPCの状態を1か所で管理します。</p>
+    <main className={styles.login}>
+      <section className={styles.loginSection}>
+        <div className={styles.loginBrand}><ControlLogo large /></div>
+        <div className={styles.loginPanel}>
+          <div className={styles.loginIntro}>
+            <h1>管理画面にログイン</h1>
+            <p>プレイヤーの記録、レンダー、音楽。<br />いつもの環境を、ここから管理できます。</p>
           </div>
-          <div className="px-7 py-6"><LoginForm discordEnabled={discordOAuthConfigured()} oauthError={oauthError} /></div>
+          <div className={styles.loginForm}><LoginForm discordEnabled={discordOAuthConfigured()} oauthError={oauthError} /></div>
         </div>
-        <p className="mt-5 text-center text-[11px] leading-5 text-[#7d8795]">Discord Botの操作には影響しません。キーフレーズはサーバー側だけで照合されます。</p>
+        <p className={styles.loginFootnote}>この画面は管理者専用です。<br />Discord Botは、ログインせずにそのまま使えます。</p>
       </section>
     </main>
   );

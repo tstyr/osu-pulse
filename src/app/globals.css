@@ -1,13 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f7f9;
+  --background: #f6f7f8;
   --foreground: #15181d;
   --muted: #697386;
   --border: #d9dee7;
   --panel: #ffffff;
   --orange: #f48120;
   --blue: #0051c3;
+  --surface: #f0f2f4;
+  --surface-selected: #edf2f8;
+  --border-strong: #c3c9d1;
+  --accent: #245b98;
+  --chart-bar: #7e9dbd;
+  --warning-ink: #9c550c;
 }
 
 @theme inline {
@@ -28,9 +34,7 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
-  background:
-    radial-gradient(circle at 12% -12%, rgba(244, 129, 32, 0.1), transparent 28rem),
-    linear-gradient(180deg, #fafbfc 0, #f4f6f8 38rem);
+  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
 }
@@ -46,9 +50,9 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 
 .cp-panel {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 7px;
   background: var(--panel);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+  box-shadow: none;
 }
 
 @supports (content-visibility: auto) {
@@ -90,16 +94,16 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border: 1px solid #cf640b;
+  border: 1px solid #204f85;
   border-radius: 7px;
-  background: #f48120;
+  background: #245b98;
   padding: 0 16px;
   color: white;
   font-size: 13px;
   font-weight: 650;
   transition: background 140ms ease, transform 140ms ease;
 }
-.cp-button-primary:hover { background: #e66f10; }
+.cp-button-primary:hover { background: #204f85; }
 .cp-button-primary:active { transform: translateY(1px); }
 .cp-button-primary:disabled { cursor: not-allowed; opacity: 0.55; }
 
@@ -113,7 +117,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #2f7bdc, #6aa8ee);
+  background: var(--accent);
   transition: width 300ms ease;
 }
 
@@ -126,11 +130,17 @@ html[data-theme="dark"] {
   --muted: #a4adbb;
   --border: #303744;
   --panel: #191e26;
+  --surface: #222832;
+  --surface-selected: #213148;
+  --border-strong: #4a5361;
+  --accent: #8db8eb;
+  --chart-bar: #6385ad;
+  --warning-ink: #edb470;
   color-scheme: dark;
 }
 
 html[data-theme="dark"] body {
-  background: radial-gradient(circle at 12% -12%, rgba(244, 129, 32, 0.14), transparent 28rem), linear-gradient(180deg, #11151b 0, #0d1015 38rem);
+  background: var(--background);
 }
 html[data-theme="dark"] .bg-white,
 html[data-theme="dark"] [class*="bg-[#faf"],
