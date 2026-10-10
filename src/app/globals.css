@@ -14,6 +14,9 @@
   --accent: #245b98;
   --chart-bar: #7e9dbd;
   --warning-ink: #9c550c;
+  --notice-background: #edf2f8;
+  --notice-border: #d4dfec;
+  --notice-ink: #365879;
 }
 
 @theme inline {
@@ -136,6 +139,9 @@ html[data-theme="dark"] {
   --accent: #8db8eb;
   --chart-bar: #6385ad;
   --warning-ink: #edb470;
+  --notice-background: #1b2838;
+  --notice-border: #34465e;
+  --notice-ink: #acc6e5;
   color-scheme: dark;
 }
 

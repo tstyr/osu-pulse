@@ -77,7 +77,7 @@ export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
   );
   const refresh = () => mutate().catch(() => undefined);
 
-  const maxTrend = Math.max(1, ...data.trend.map((item) => item.total));
+  const maxTrend = Math.max(2, Math.ceil(Math.max(0, ...data.trend.map((item) => item.total)) / 2) * 2);
   const storageMissing = data.renderer.storage.available === false || data.renderer.storage.songsAvailable === false || data.renderer.storage.outputAvailable === false;
   const youtubeReauth = data.renderer.youtube.authStatus === "reauthorization_required";
   return (
@@ -100,7 +100,7 @@ export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
       </section>
 
       <section className={styles.shortcuts} aria-label="レンダー管理のショートカット">{[{ href: "/dashboard/render", label: "レンダー・待機列", detail: `${data.renderer.cloudQueue}件 受付済み・処理中` }, { href: "/dashboard/videos", label: "投稿済み動画", detail: "YouTubeリンク・保存後の整理" }, { href: "/dashboard/operations", label: "サービス・ログ", detail: "Bot / Rendererの状態を確認" }].map((item) => <Link key={item.href} href={item.href} prefetch={false} className={styles.shortcut}><div><strong>{item.label}</strong><p>{item.detail}</p></div><ArrowRight aria-hidden="true" /></Link>)}</section>
-      {data.renderer.startPolicy.allowed === false ? <p className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-900">自動レンダーは許可時間・PCのアイドル条件を待っています。手動レンダーは対象外です。{data.renderer.startPolicy.reason ? <span className="mt-1 block font-mono text-[10px] text-blue-700">{data.renderer.startPolicy.reason}</span> : null}</p> : null}
+      {data.renderer.startPolicy.allowed === false ? <p className={styles.policyNotice}>自動レンダーは許可時間・PCのアイドル条件を待っています。手動レンダーは対象外です。{data.renderer.startPolicy.reason ? <span>{data.renderer.startPolicy.reason}</span> : null}</p> : null}
 
       <div className={styles.columns}>
         <section className="cp-panel overflow-hidden">
@@ -111,7 +111,7 @@ export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
               <div className={styles.bars}>
               {data.trend.map((item) => (
                 <div key={item.date} className={styles.barSlot} title={`${item.date}: ${item.total}本 / 失敗 ${item.failed}本`}>
-                  <div className={styles.bar} style={{ height: `${item.total / maxTrend * 100}%` }}>
+                  <div className={styles.bar} data-empty={item.total === 0 ? "true" : undefined} style={{ height: `${item.total / maxTrend * 100}%` }}>
                     {item.failed && item.total > 0 ? <span className={styles.barFailed} style={{ height: `${item.failed / item.total * 100}%` }} /> : null}
                   </div>
                 </div>
@@ -119,7 +119,7 @@ export function OverviewDashboard({ initial }: { initial: DashboardOverview }) {
               </div>
             </div>
             <div className={styles.chartDates}><span>{data.trend[0]?.date.slice(5)}</span><span>{data.trend.at(-1)?.date.slice(5)}</span></div>
-            <div className={styles.chartFoot}><span><i aria-hidden="true" />処理総数</span><span><i aria-hidden="true" />失敗</span>{data.trend.every((item) => item.total === 0) ? <p>この期間のレンダー記録はありません。</p> : null}</div>
+            <div className={styles.chartFoot}><span><i aria-hidden="true" />処理総数</span><span className={styles.failureKey}><i aria-hidden="true" />失敗</span>{data.trend.every((item) => item.total === 0) ? <p>この期間のレンダー記録はありません。</p> : null}</div>
           </div>
         </section>
 

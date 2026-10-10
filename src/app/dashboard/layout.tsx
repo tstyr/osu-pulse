@@ -6,7 +6,8 @@ import { connection } from "next/server";
 import { logout } from "@/app/actions/auth";
 import { ControlLogo } from "@/components/control-panel/control-logo";
 import { DashboardBreadcrumb, DashboardNav } from "@/components/control-panel/dashboard-nav";
-import { PageScaleControls, PageScaleSurface, UiPreferenceControls } from "@/components/control-panel/ui-preferences";
+import { PageScaleSurface } from "@/components/control-panel/ui-preferences";
+import { DisplayOptions } from "@/components/control-panel/display-options";
 import { getControlPanelSession } from "@/lib/control/auth";
 import styles from "@/components/control-panel/console.module.css";
 
@@ -28,7 +29,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <div className={styles.body}>
         <header className={styles.header}>
           <DashboardBreadcrumb />
-          <div className={styles.tools}><PageScaleControls /><UiPreferenceControls /><form action={logout}>
+          <div className={styles.tools}><DisplayOptions /><form action={logout}>
             <button type="submit" className={styles.logout}>
               <LogOut className="size-3.5" aria-hidden="true" /> ログアウト
             </button>

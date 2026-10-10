@@ -38,7 +38,10 @@
 .chartFoot { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 18px 20px; color: var(--muted); font-size: 10px; }
 .chartFoot span { display: inline-flex; align-items: center; gap: 6px; }
 .chartFoot i { width: 7px; height: 7px; border-radius: 1px; background: var(--chart-bar); }
-.chartFoot span:last-child i { background: #d45d64; }
+.chartFoot .failureKey i { background: #d45d64; }
+.bar[data-empty="true"] { min-height: 0; }
+.policyNotice { margin-top: 12px; padding: 12px 16px; border: 1px solid var(--notice-border); border-radius: 5px; background: var(--notice-background); color: var(--notice-ink); font-size: 11px; line-height: 1.8; }
+.policyNotice span { display: block; margin-top: 4px; font-family: var(--font-geist-mono), monospace; font-size: 10px; }
 .resources { padding: 0 20px; }
 .resource { padding: 14px 0; }
 .resource + .resource { border-top: 1px solid var(--border); }
